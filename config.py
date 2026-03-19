@@ -4,26 +4,26 @@ from os import getenv
 
 
 # ------------------------------------------------
-API_ID = int(os.environ.get("API_ID", "28201702"))
+API_ID = int(os.environ.get("API_ID", "30742637"))
 # ------------------------------------------------
-API_HASH = os.environ.get("API_HASH","31c9bbed9c688b89736d94da7e89653b")
+API_HASH = os.environ.get("API_HASH","7298667149c8df8d60c9743fe7e2952b")
 # ------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # ------------------------------------------------
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "@UGExtractorBot")
-BOT_TEXT = "UG Extractor"
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "@ONeXexTractor_bot")
+BOT_TEXT = "ONeX Extractor"
 # ------------------------------------------------
-OWNER_ID = int(os.environ.get("OWNER_ID", "7958597957"))
+OWNER_ID = int(os.environ.get("OWNER_ID", "8602819066"))
 # ------------------------------------------------
 # //LOG CHANNEL ID 
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1002683859662"))
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003897777898"))
 
 # //FORCE_CHANNEL_ID
-CHANNEL_ID2 = int(os.environ.get("CHANNEL_ID2", "-1002471859014")) 
+CHANNEL_ID2 = int(os.environ.get("CHANNEL_ID2", "-1003897777898")) 
 # ------------------------------------------------
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://ankush23:JYzSGlbjpFezDSWH@cluster0.ulzzd1m.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://ONeX_db_user:onexvartikuu142062@cluster0.ga3zort.mongodb.net/?appName=Cluster0")
 # -----------------------------------------------
-PREMIUM_LOGS = int(os.environ.get("PREMIUM_LOGS", "-1002829170533"))
+PREMIUM_LOGS = int(os.environ.get("PREMIUM_LOGS", "-1003897777898"))
 # -----------------------------------------------
 join = '<a href="https://t.me/+MgPgCAPUOVU2Yjhl">✳️ JOIN BACKUP</a>'
 # -----------------------------------------------
