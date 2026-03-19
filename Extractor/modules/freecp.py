@@ -565,24 +565,24 @@ async def process_cpwp(bot: Client, m: Message, user_id: int):
                                     else:
                                         formatted_time = f"{minutes} minutes {seconds} seconds"
 
-                                 caption = (
-    f"<blockquote><b>✨ ᴏɴᴇx ᴇxᴛʀᴀᴄᴛᴏʀ ✨</b>\n"
-    f"<b>────────────────────</b>\n\n"
-    f"<b>👤 ᴜsᴇʀ :</b> {mention}\n"
-    f"<b>🌀 ᴀᴘᴘ :</b> <code>{App_Name}</code>\n"
-    f"<b>🔑 ᴏʀɢ :</b> <code>{org_code}</code>\n\n"
-    f"<b>🎯 ʙᴀᴛᴄʜ :</b> <code>{clean_batch_name}</code>\n"
-    f"<b>────────────────────</b>\n"
-    f"<b>📊 sᴛᴀᴛɪsᴛɪᴄs :</b>\n"
-    f"  ├ 🎬 ᴠɪᴅᴇᴏs : {video_count}\n"
-    f"  ├ 📁 ᴘᴅғs   : {pdf_count}\n"
-    f"  └ 🖼 ɪᴍᴀɢᴇs : {image_count}\n\n"
-    f"<b>⌛ ᴛɪᴍᴇ :</b> {formatted_time}\n"
-    f"<b>📅 ᴅᴀᴛᴇ :</b> {time_new}\n"
-    f"<b>────────────────────</b>\n"
-    f"<b>🌐 ᴊᴏɪɴ :</b> {join}</blockquote>\n\n"
-    f"<b>❄️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ : 𓆩 ONҽX 𓆪</b>"
-)
+                                    caption = (
+                                        f"<blockquote><b>✨ ᴏɴᴇx ᴇxᴛʀᴀᴄᴛᴏʀ ✨</b>\n"
+                                        f"<b>────────────────────</b>\n\n"
+                                        f"<b>👤 ᴜsᴇʀ :</b> {mention}\n"
+                                        f"<b>🌀 ᴀᴘᴘ :</b> <code>{App_Name}</code>\n"
+                                        f"<b>🔑 ᴏʀɢ :</b> <code>{org_code}</code>\n\n"
+                                        f"<b>🎯 ʙᴀᴛᴄʜ :</b> <code>{clean_batch_name}</code>\n"
+                                        f"<b>────────────────────</b>\n"
+                                        f"<b>📊 sᴛᴀᴛɪsᴛɪᴄs :</b>\n"
+                                        f"  ├ 🎬 ᴠɪᴅᴇᴏs : {video_count}\n"
+                                        f"  ├ 📁 ᴘᴅғs   : {pdf_count}\n"
+                                        f"  └ 🖼 ɪᴍᴀɢᴇs : {image_count}\n\n"
+                                        f"<b>⌛ ᴛɪᴍᴇ :</b> {formatted_time}\n"
+                                        f"<b>📅 ᴅᴀᴛᴇ :</b> {time_new}\n"
+                                        f"<b>────────────────────</b>\n"
+                                        f"<b>🌐 ᴊᴏɪɴ :</b> {join}</blockquote>\n\n"
+                                        f"<b>❄️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ : 𓆩 ONҽX 𓆪</b>"
+                                    )
                                             
                                     try:
                                         # Send unencrypted file to user
