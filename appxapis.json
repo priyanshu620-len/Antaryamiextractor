@@ -9682,5 +9682,9 @@
     {
         "name": "Zscore",
         "api": "https://zscoreapi.classx.co.in"
+    },
+    {
+        "name": "Dnyandeep Academy Pune",
+        "api": "https://dnyanadeepacademypuneapi.classx.co.in"
+    },
     }
-]
