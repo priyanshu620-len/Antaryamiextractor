@@ -565,7 +565,7 @@ async def process_cpwp(bot: Client, m: Message, user_id: int):
                                     else:
                                         formatted_time = f"{minutes} minutes {seconds} seconds"
 
-                                   caption = (
+                                 caption = (
     f"<blockquote><b>✨ ᴏɴᴇx ᴇxᴛʀᴀᴄᴛᴏʀ ✨</b>\n"
     f"<b>────────────────────</b>\n\n"
     f"<b>👤 ᴜsᴇʀ :</b> {mention}\n"
@@ -582,7 +582,7 @@ async def process_cpwp(bot: Client, m: Message, user_id: int):
     f"<b>────────────────────</b>\n"
     f"<b>🌐 ᴊᴏɪɴ :</b> {join}</blockquote>\n\n"
     f"<b>❄️ ᴘᴏᴡᴇʀᴇᴅ ʙʏ : 𓆩 ONҽX 𓆪</b>"
-                                )
+)
                                             
                                     try:
                                         # Send unencrypted file to user
