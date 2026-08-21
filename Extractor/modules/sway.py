@@ -125,6 +125,48 @@ async def fetch_classes(session: aiohttp.ClientSession, topic_id, course_id):
     return []
 
 
+async def fetch_topics(session: aiohttp.ClientSession, course_id):
+    """Fetches topics, including sub-sections if nested."""
+    url = f"{API_BASE}/topic-and-section?courseId={course_id}&userId="
+    try:
+        async with session.get(url, headers=HEADERS, timeout=25) as resp:
+            if resp.status == 200:
+                data = await resp.json(content_type=None)
+                if data.get("state") == 200:
+                    res_data = data.get("data", {})
+                    if isinstance(res_data, list):
+                        return res_data
+                    
+                    topics = res_data.get("topics", [])
+                    # Also collect topics nested inside sections if present
+                    sections = res_data.get("sections", [])
+                    for s in sections:
+                        sec_topics = s.get("topics", [])
+                        if sec_topics:
+                            topics.extend(sec_topics)
+                    return topics
+    except Exception:
+        pass
+    return []
+
+
+async def fetch_classes(session: aiohttp.ClientSession, topic_id, course_id):
+    """Fetches all class recordings and materials for a given topic."""
+    url = f"{API_BASE}/topics/{topic_id}/classes?courseId={course_id}&userId="
+    try:
+        async with session.get(url, headers=HEADERS, timeout=30) as resp:
+            if resp.status == 200:
+                data = await resp.json(content_type=None)
+                if data.get("state") == 200:
+                    res_data = data.get("data", {})
+                    if isinstance(res_data, list):
+                        return res_data
+                    return res_data.get("classes", [])
+    except Exception:
+        pass
+    return []
+
+
 async def cmd_selectionway(client: Client, message: Message):
     user_id = message.chat.id
     status_msg = await message.reply_text("⚡ **Fetching course list & pricing...**")
