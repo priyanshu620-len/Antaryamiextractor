@@ -1,11 +1,12 @@
+import asyncio
+from datetime import datetime
 import io
 import re
 import time
 import aiohttp
-import asyncio
-from pyrogram import filters, Client
-from pyrogram.types import Message, CallbackQuery
 from Extractor import app
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
 API_BASE = "https://gdgoenkaratia.com/api"
 HEADERS = {
@@ -20,13 +21,13 @@ USER_SESSIONS = {}
 
 
 def clean_filename(name: str) -> str:
-    name = re.sub(r'[<>:"/\\|?*]', '_', name)
-    name = re.sub(r'\s+', '_', name)
-    return name.strip('_. ') or "SelectionWay_Batch"
+    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    name = re.sub(r"\s+", "_", name)
+    return name.strip("_. ") or "SelectionWay_Batch"
 
 
 async def fetch_batches(session: aiohttp.ClientSession):
-    """Fetches all 130+ SelectionWay courses across all base APIs and category structures."""
+    """Fetches all SelectionWay courses across all base APIs and category structures."""
     all_courses = []
     seen_ids = set()
 
@@ -47,15 +48,13 @@ async def fetch_batches(session: aiohttp.ClientSession):
                 added += 1
         return added
 
-    # 1. Check primary backend endpoints across both domains
+    # 1. Check primary backend endpoints
     candidate_urls = [
-        # SelectionWay primary API
         "https://www.selectionway.com/api/courses/all?userId=",
         "https://www.selectionway.com/api/courses?userId=",
         "https://www.selectionway.com/api/courses/active?userId=&type=all",
         "https://api.selectionway.com/api/courses/active?userId=",
         "https://api.selectionway.com/api/courses?userId=",
-        # Backend domain with parameters
         f"{API_BASE}/courses?userId=",
         f"{API_BASE}/courses/all?userId=",
         f"{API_BASE}/courses/active?userId=&type=all",
@@ -70,18 +69,22 @@ async def fetch_batches(session: aiohttp.ClientSession):
                     data = await resp.json(content_type=None)
                     if isinstance(data, dict):
                         raw = data.get("data", [])
-                        items = raw if isinstance(raw, list) else raw.get("courses") or raw.get("records") or []
+                        items = (
+                            raw
+                            if isinstance(raw, list)
+                            else raw.get("courses") or raw.get("records") or []
+                        )
                         add_courses(items)
         except Exception:
             pass
 
-    # 2. Extract Category Tree & aggregate courses from each category
+    # 2. Extract Category Tree & aggregate courses
     category_endpoints = [
         f"{API_BASE}/categories?userId=",
         f"{API_BASE}/exam-categories?userId=",
         f"{API_BASE}/course-categories?userId=",
         "https://www.selectionway.com/api/categories?userId=",
-        "https://www.selectionway.com/api/exam-categories?userId="
+        "https://www.selectionway.com/api/exam-categories?userId=",
     ]
 
     cat_ids = set()
@@ -93,7 +96,11 @@ async def fetch_batches(session: aiohttp.ClientSession):
                     raw_cats = data.get("data", [])
                     if isinstance(raw_cats, list):
                         for cat in raw_cats:
-                            cid = cat.get("id") or cat.get("_id") or cat.get("categoryId")
+                            cid = (
+                                cat.get("id")
+                                or cat.get("_id")
+                                or cat.get("categoryId")
+                            )
                             if cid:
                                 cat_ids.add(cid)
         except Exception:
@@ -102,24 +109,36 @@ async def fetch_batches(session: aiohttp.ClientSession):
     # Query all detected categories in parallel
     if cat_ids:
         cat_tasks = [
-            session.get(f"{API_BASE}/courses/active?categoryId={cid}&userId=", headers=HEADERS, timeout=15)
+            session.get(
+                f"{API_BASE}/courses/active?categoryId={cid}&userId=",
+                headers=HEADERS,
+                timeout=15,
+            )
             for cid in cat_ids
         ]
         responses = await asyncio.gather(*cat_tasks, return_exceptions=True)
         for r in responses:
-            if hasattr(r, 'status') and r.status == 200:
+            if hasattr(r, "status") and r.status == 200:
                 try:
                     data = await r.json(content_type=None)
                     raw = data.get("data", [])
-                    items = raw if isinstance(raw, list) else raw.get("courses") or []
+                    items = (
+                        raw
+                        if isinstance(raw, list)
+                        else raw.get("courses") or []
+                    )
                     add_courses(items)
                 except Exception:
                     pass
 
-    # 3. Fallback to base 31 if nothing else succeeded
+    # 3. Fallback check
     if not all_courses:
         try:
-            async with session.get(f"{API_BASE}/courses/active?userId=", headers=HEADERS, timeout=15) as resp:
+            async with session.get(
+                f"{API_BASE}/courses/active?userId=",
+                headers=HEADERS,
+                timeout=15,
+            ) as resp:
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
                     raw = data.get("data", [])
@@ -141,51 +160,8 @@ async def fetch_topics(session: aiohttp.ClientSession, course_id):
                     res_data = data.get("data", {})
                     if isinstance(res_data, list):
                         return res_data
-                    
+
                     topics = res_data.get("topics", [])
-                    # Also collect topics nested inside sections if present
-                    sections = res_data.get("sections", [])
-                    for s in sections:
-                        sec_topics = s.get("topics", [])
-                        if sec_topics:
-                            topics.extend(sec_topics)
-                    return topics
-    except Exception:
-        pass
-    return []
-
-
-async def fetch_classes(session: aiohttp.ClientSession, topic_id, course_id):
-    """Fetches all class recordings and materials for a given topic."""
-    url = f"{API_BASE}/topics/{topic_id}/classes?courseId={course_id}&userId="
-    try:
-        async with session.get(url, headers=HEADERS, timeout=30) as resp:
-            if resp.status == 200:
-                data = await resp.json(content_type=None)
-                if data.get("state") == 200:
-                    res_data = data.get("data", {})
-                    if isinstance(res_data, list):
-                        return res_data
-                    return res_data.get("classes", [])
-    except Exception:
-        pass
-    return []
-
-
-async def fetch_topics(session: aiohttp.ClientSession, course_id):
-    """Fetches topics, including sub-sections if nested."""
-    url = f"{API_BASE}/topic-and-section?courseId={course_id}&userId="
-    try:
-        async with session.get(url, headers=HEADERS, timeout=25) as resp:
-            if resp.status == 200:
-                data = await resp.json(content_type=None)
-                if data.get("state") == 200:
-                    res_data = data.get("data", {})
-                    if isinstance(res_data, list):
-                        return res_data
-                    
-                    topics = res_data.get("topics", [])
-                    # Also collect topics nested inside sections if present
                     sections = res_data.get("sections", [])
                     for s in sections:
                         sec_topics = s.get("topics", [])
@@ -216,13 +192,17 @@ async def fetch_classes(session: aiohttp.ClientSession, topic_id, course_id):
 
 async def cmd_selectionway(client: Client, message: Message):
     user_id = message.chat.id
-    status_msg = await message.reply_text("⚡ **Fetching course list & pricing...**")
+    status_msg = await message.reply_text(
+        "⚡ **Fetching course list & pricing...**"
+    )
 
     async with aiohttp.ClientSession() as session:
         batches = await fetch_batches(session)
 
     if not batches:
-        await status_msg.edit_text("❌ **Failed to fetch courses or no active courses found.**")
+        await status_msg.edit_text(
+            "❌ **Failed to fetch courses or no active courses found.**"
+        )
         return
 
     USER_SESSIONS[user_id] = batches
@@ -245,26 +225,32 @@ async def cmd_selectionway(client: Client, message: Message):
     list_bytes.name = "SelectionWay_Courses_List.txt"
 
     caption = (
-        f"> ⚡ **SELECTIONWAY COURSES**\n"
+        "> ⚡ **SELECTIONWAY COURSES**\n"
         f"> *Found {len(batches)} active courses*\n\n"
-        f"📄 Check the attached file for all course numbers and prices.\n\n"
-        f"👉 **Send the course number** (e.g. `1` or `5`) to extract links."
+        "📄 Check the attached file for all course numbers and prices.\n\n"
+        "👉 **Send the course number** (e.g. `1` or `5`) to extract links."
     )
 
     await message.reply_document(
         document=list_bytes,
         file_name="SelectionWay_Courses_List.txt",
-        caption=caption
+        caption=caption,
     )
     await status_msg.delete()
 
 
-@app.on_message(filters.command(["sway", "selectionway", "sq"]) & filters.private)
+@app.on_message(
+    filters.command(["sway", "selectionway", "sq"]) & filters.private
+)
 async def sway_msg_handler(client: Client, message: Message):
     await cmd_selectionway(client, message)
 
 
-@app.on_message(filters.text & filters.private & ~filters.command(["sq", "sway", "selectionway", "start"]))
+@app.on_message(
+    filters.text
+    & filters.private
+    & ~filters.command(["sq", "sway", "selectionway", "start"])
+)
 async def process_course_selection(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id not in USER_SESSIONS:
@@ -278,13 +264,22 @@ async def process_course_selection(client: Client, message: Message):
     batches = USER_SESSIONS[user_id]
 
     if selected_idx < 0 or selected_idx >= len(batches):
-        await message.reply_text(f"⚠️ **Invalid number!** Please enter a number between `1` and `{len(batches)}`.")
+        await message.reply_text(
+            f"⚠️ **Invalid number!** Please enter a number between `1` and `{len(batches)}`."
+        )
         return
 
     batch = batches[selected_idx]
-    course_id = batch.get("id")
+    course_id = batch.get("id") or batch.get("_id", "N/A")
     batch_title = batch.get("title", "Batch")
-    faculty = batch.get("facultyDetails", {}).get("name", "N/A")
+    price = batch.get("fee", batch.get("price", "Free"))
+    is_purchased = batch.get("isPurchased", False)
+    thumbnail = batch.get(
+        "previewImage",
+        batch.get("coverImage", "https://via.placeholder.com/300"),
+    )
+
+    start_time = time.time()
 
     status_msg = await message.reply_text(
         f"⏳ **Extracting:** `{batch_title}`\n\n_Fetching topics & class links..._"
@@ -301,10 +296,14 @@ async def process_course_selection(client: Client, message: Message):
         total_pdfs = 0
         last_edit_time = 0
 
-        tasks = [fetch_classes(session, t.get("topicId"), course_id) for t in topics]
+        tasks = [
+            fetch_classes(session, t.get("topicId"), course_id) for t in topics
+        ]
         all_topic_classes = await asyncio.gather(*tasks)
 
-        for t_idx, (topic, classes) in enumerate(zip(topics, all_topic_classes), 1):
+        for t_idx, (topic, classes) in enumerate(
+            zip(topics, all_topic_classes), 1
+        ):
             topic_name = topic.get("topicName", f"Topic {t_idx}")
 
             now = time.time()
@@ -353,28 +352,36 @@ async def process_course_selection(client: Client, message: Message):
 
     total_links = total_videos + total_pdfs
     if total_links == 0:
-        await status_msg.edit_text("⚠️ **No downloadable links found in this batch.**")
+        await status_msg.edit_text(
+            "⚠️ **No downloadable links found in this batch.**"
+        )
         return
+
+    time_taken = max(1, int(time.time() - start_time))
+    current_time = datetime.now().strftime("%d-%m-%Y  %H:%M:%S")
+    purchased_text = "✅ YES" if is_purchased else "❌ NO"
 
     file_bytes = io.BytesIO(output.getvalue().encode("utf-8"))
     safe_name = f"{clean_filename(batch_title)}.txt"
     file_bytes.name = safe_name
 
     caption = (
-        f"> ⚡ **S E L E C T I O N W A Y**\n"
-        f"> *Course content successfully extracted*\n\n"
-        f"📖 **Course:** `{batch_title}`\n"
-        f"👤 **Faculty:** `{faculty}`\n\n"
-        f"> 📊 **Overview**\n"
-        f"> ├ 🎬 **Videos:** `{total_videos}`\n"
-        f"> ├ 📄 **PDFs:** `{total_pdfs}`\n"
-        f"> └ 🔗 **Total Items:** `{total_links}`\n\n"
-        f"✨ *Downloaded & packaged cleanly.*"
+        "⚡ **Selection Way Extraction Report** ⚡\n\n"
+        f"📚 **Batch Name:** _{batch_title}_\n"
+        "> • 📱 **App Name:** Selection Way\n"
+        f"> • 🆔 **Batch ID:** {course_id}\n"
+        f"> • 🛒 **Purchased:** {purchased_text}\n"
+        f"> • 💰 **Price:** ₹{price}\n"
+        f"> • 🌅 **Thumbnail:** [Click Here to View]({thumbnail})\n"
+        f"> • ⏳ **Time Taken:** {time_taken}s\n"
+        f"> • 📅 **Date & Time:** {current_time}\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "📊 **Content Summary**\n"
+        f"> 🔗 **Total:** {total_links} | 🎬 **Videos:** {total_videos} | 📄 **PDFs:** {total_pdfs}\n"
+        "━━━━━━━━━━━━━━━━━━━"
     )
 
     await message.reply_document(
-        document=file_bytes,
-        file_name=safe_name,
-        caption=caption
+        document=file_bytes, file_name=safe_name, caption=caption
     )
     await status_msg.delete()
