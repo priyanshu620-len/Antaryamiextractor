@@ -26,39 +26,100 @@ def clean_filename(name: str) -> str:
 
 
 async def fetch_batches(session: aiohttp.ClientSession):
-    url = f"{API_BASE}/courses/active?userId="
+    """Fetches all active courses across all available pages."""
+    all_courses = []
+    seen_ids = set()
+
+    # Strategy 1: Attempt to pull all records in a single bulk query
+    bulk_url = f"{API_BASE}/courses/active?userId=&page=1&limit=500&pageSize=500"
     try:
-        async with session.get(url, headers=HEADERS, timeout=25) as resp:
+        async with session.get(bulk_url, headers=HEADERS, timeout=25) as resp:
             if resp.status == 200:
                 data = await resp.json(content_type=None)
                 if data.get("state") == 200:
-                    return data.get("data", [])
+                    raw = data.get("data", [])
+                    courses = raw if isinstance(raw, list) else raw.get("courses") or raw.get("records") or []
+                    if len(courses) > 40:
+                        return courses
     except Exception:
         pass
-    return []
+
+    # Strategy 2: Page-by-page traversal if bulk pagination parameters are ignored
+    page = 1
+    while True:
+        page_url = f"{API_BASE}/courses/active?userId=&page={page}&limit=30"
+        try:
+            async with session.get(page_url, headers=HEADERS, timeout=25) as resp:
+                if resp.status != 200:
+                    break
+                data = await resp.json(content_type=None)
+                if data.get("state") != 200:
+                    break
+
+                raw = data.get("data", [])
+                courses = raw if isinstance(raw, list) else raw.get("courses") or raw.get("records") or []
+                if not courses:
+                    break
+
+                new_items = 0
+                for c in courses:
+                    c_id = c.get("id") or c.get("_id")
+                    if c_id and c_id not in seen_ids:
+                        seen_ids.add(c_id)
+                        all_courses.append(c)
+                        new_items += 1
+                    elif not c_id:
+                        all_courses.append(c)
+                        new_items += 1
+
+                if new_items == 0:
+                    break
+
+                page += 1
+                await asyncio.sleep(0.05)
+        except Exception:
+            break
+
+    return all_courses
 
 
 async def fetch_topics(session: aiohttp.ClientSession, course_id):
+    """Fetches topics, including sub-sections if nested."""
     url = f"{API_BASE}/topic-and-section?courseId={course_id}&userId="
     try:
         async with session.get(url, headers=HEADERS, timeout=25) as resp:
             if resp.status == 200:
                 data = await resp.json(content_type=None)
                 if data.get("state") == 200:
-                    return data.get("data", {}).get("topics", [])
+                    res_data = data.get("data", {})
+                    if isinstance(res_data, list):
+                        return res_data
+                    
+                    topics = res_data.get("topics", [])
+                    # Also collect topics nested inside sections if present
+                    sections = res_data.get("sections", [])
+                    for s in sections:
+                        sec_topics = s.get("topics", [])
+                        if sec_topics:
+                            topics.extend(sec_topics)
+                    return topics
     except Exception:
         pass
     return []
 
 
 async def fetch_classes(session: aiohttp.ClientSession, topic_id, course_id):
+    """Fetches all class recordings and materials for a given topic."""
     url = f"{API_BASE}/topics/{topic_id}/classes?courseId={course_id}&userId="
     try:
         async with session.get(url, headers=HEADERS, timeout=30) as resp:
             if resp.status == 200:
                 data = await resp.json(content_type=None)
                 if data.get("state") == 200:
-                    return data.get("data", {}).get("classes", [])
+                    res_data = data.get("data", {})
+                    if isinstance(res_data, list):
+                        return res_data
+                    return res_data.get("classes", [])
     except Exception:
         pass
     return []
