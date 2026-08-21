@@ -13,7 +13,7 @@ from Extractor import app
 from config import OWNER_ID, CHANNEL_ID
 from Extractor.core import script
 from Extractor.core.func import subscribe, chk_user
-# from Extractor.modules.cdsfree import handle_cds_journey, handle_cds_callback, handle_batch_message
+from Extractor.modules.sway import cmd_selectionway
 # from Extractor.modules.appex_v1 import api_v1
 # from Extractor.modules.appex_v2 import appex_v2_txt
 # from Extractor.modules.appex_v3 import appex_v5_txt
@@ -78,15 +78,22 @@ modes_button = [[
                 ]]
 
 
-custom_button = [[
-                  InlineKeyboardButton("⚡ Pᴡ ⚡", callback_data="pwwp"),
-                  InlineKeyboardButton("🔮 Aᴘᴘx 🔮", callback_data="appxwp"),
-                ],[
-                  InlineKeyboardButton("🎯 CʟᴀssPʟᴜs 🎯", callback_data="cpwp"),
-                  InlineKeyboardButton("🎓 CDS Jᴏᴜʀɴᴇʏ 🎓", callback_data="cds_journey_free")
-                ],[
-                  InlineKeyboardButton("𝐁 𝐀 𝐂 𝐊", callback_data="modes_")
-                ]]
+custom_button = [
+    [
+        InlineKeyboardButton("⚡ Pᴡ ⚡", callback_data="pwwp"),
+        InlineKeyboardButton("🔮 Aᴘᴘx 🔮", callback_data="appxwp"),
+    ],
+    [
+        InlineKeyboardButton("🎯 CʟᴀssPʟᴜs 🎯", callback_data="cpwp"),
+        InlineKeyboardButton("🎓 CDS Jᴏᴜʀɴᴇʏ 🎓", callback_data="cds_journey_free"),
+    ],
+    [
+        InlineKeyboardButton("📚 Sᴇʟᴇᴄᴛɪᴏɴ Wᴀʏ 📚", callback_data="sway_free"),
+    ],
+    [
+        InlineKeyboardButton("𝐁 𝐀 𝐂 𝐊", callback_data="modes_"),
+    ]
+]
 
 button1 = [              
                 [
@@ -297,6 +304,11 @@ async def show_alphabet(client, query):
 async def show_apps_for_letter(client, query):
     letter = query.data.split('_')[1]
     apps = get_apps_by_letter(letter)
+
+  @app.on_callback_query(filters.regex(r"^sway_free$"))
+async def handle_sway_callback(client: Client, callback: CallbackQuery):
+    await callback.answer()
+    await cmd_selectionway(client, callback.message)
     
     if not apps:
         await query.answer(f"No apps found starting with {letter}", show_alert=True)
