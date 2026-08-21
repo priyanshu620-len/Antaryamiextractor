@@ -4,34 +4,34 @@ from os import getenv
 
 
 # ------------------------------------------------
-API_ID = int(os.environ.get("API_ID", "30742637"))
+API_ID = int(os.environ.get("API_ID", "30574823"))
 # ------------------------------------------------
-API_HASH = os.environ.get("API_HASH","7298667149c8df8d60c9743fe7e2952b")
+API_HASH = os.environ.get("API_HASH","2815bb996f64421716844acaf2d51493")
 # ------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # ------------------------------------------------
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "@ONeXexTractor_bot")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "@ONeXxExtractorbot")
 BOT_TEXT = "ONeX Extractor"
 # ------------------------------------------------
-OWNER_ID = int(os.environ.get("OWNER_ID", "8602819066"))
+OWNER_ID = int(os.environ.get("OWNER_ID", "8549673687"))
 # ------------------------------------------------
 # //LOG CHANNEL ID 
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003897777898"))
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1004414465109"))
 
 # //FORCE_CHANNEL_ID
-CHANNEL_ID2 = int(os.environ.get("CHANNEL_ID2", "-1003897777898")) 
+CHANNEL_ID2 = int(os.environ.get("CHANNEL_ID2", "-1004414465109")) 
 # ------------------------------------------------
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://ONeX_db_user:onexvartikuu142062@cluster0.ga3zort.mongodb.net/?appName=Cluster0")
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://priyanshudwivedi620:onex0568@cluster0.uee3cvj.mongodb.net/?appName=Cluster0")
 # -----------------------------------------------
-PREMIUM_LOGS = int(os.environ.get("PREMIUM_LOGS", "-1003897777898"))
+PREMIUM_LOGS = int(os.environ.get("PREMIUM_LOGS", "-1004414465109"))
 # -----------------------------------------------
-join = '<a href="https://t.me/+MgPgCAPUOVU2Yjhl">✳️ JOIN BACKUP</a>'
+join = '<a href="https://t.me/+MgPgCAPYjhl">✳️ JOIN BACKUP</a>'
 # -----------------------------------------------
 UNSPLASH_ACCESS_KEY = 'RabDRmuXXBobanmwwbvpP5LwoG4J8ox34y5Sstz-9jk'
 # -----------------------------------------------
 UNSPLASH_QUERY = 'animal baby'
 # -----------------------------------------------
-ADMIN_BOT_USERNAME = "UGxPRO" #without @
+ADMIN_BOT_USERNAME = "ONeX" #without @
 
 THUMB_URL = os.environ.get("THUMB_URL", "https://josephscollege.ac.in/wp-content/uploads/2022/04/1.jpg")
 
