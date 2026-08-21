@@ -26,59 +26,106 @@ def clean_filename(name: str) -> str:
 
 
 async def fetch_batches(session: aiohttp.ClientSession):
-    """Fetches all active courses across all available pages."""
+    """Fetches all 130+ SelectionWay courses across all base APIs and category structures."""
     all_courses = []
     seen_ids = set()
 
-    # Strategy 1: Attempt to pull all records in a single bulk query
-    bulk_url = f"{API_BASE}/courses/active?userId=&page=1&limit=500&pageSize=500"
-    try:
-        async with session.get(bulk_url, headers=HEADERS, timeout=25) as resp:
-            if resp.status == 200:
-                data = await resp.json(content_type=None)
-                if data.get("state") == 200:
-                    raw = data.get("data", [])
-                    courses = raw if isinstance(raw, list) else raw.get("courses") or raw.get("records") or []
-                    if len(courses) > 40:
-                        return courses
-    except Exception:
-        pass
+    def add_courses(items):
+        added = 0
+        if not items:
+            return 0
+        for c in items:
+            if not isinstance(c, dict):
+                continue
+            cid = c.get("id") or c.get("_id") or c.get("courseId")
+            if cid and cid not in seen_ids:
+                seen_ids.add(cid)
+                all_courses.append(c)
+                added += 1
+            elif not cid and c not in all_courses:
+                all_courses.append(c)
+                added += 1
+        return added
 
-    # Strategy 2: Page-by-page traversal if bulk pagination parameters are ignored
-    page = 1
-    while True:
-        page_url = f"{API_BASE}/courses/active?userId=&page={page}&limit=30"
+    # 1. Check primary backend endpoints across both domains
+    candidate_urls = [
+        # SelectionWay primary API
+        "https://www.selectionway.com/api/courses/all?userId=",
+        "https://www.selectionway.com/api/courses?userId=",
+        "https://www.selectionway.com/api/courses/active?userId=&type=all",
+        "https://api.selectionway.com/api/courses/active?userId=",
+        "https://api.selectionway.com/api/courses?userId=",
+        # Backend domain with parameters
+        f"{API_BASE}/courses?userId=",
+        f"{API_BASE}/courses/all?userId=",
+        f"{API_BASE}/courses/active?userId=&type=all",
+        f"{API_BASE}/courses/active?userId=&status=all",
+        f"{API_BASE}/courses/active?userId=&package=all",
+    ]
+
+    for url in candidate_urls:
         try:
-            async with session.get(page_url, headers=HEADERS, timeout=25) as resp:
-                if resp.status != 200:
-                    break
-                data = await resp.json(content_type=None)
-                if data.get("state") != 200:
-                    break
-
-                raw = data.get("data", [])
-                courses = raw if isinstance(raw, list) else raw.get("courses") or raw.get("records") or []
-                if not courses:
-                    break
-
-                new_items = 0
-                for c in courses:
-                    c_id = c.get("id") or c.get("_id")
-                    if c_id and c_id not in seen_ids:
-                        seen_ids.add(c_id)
-                        all_courses.append(c)
-                        new_items += 1
-                    elif not c_id:
-                        all_courses.append(c)
-                        new_items += 1
-
-                if new_items == 0:
-                    break
-
-                page += 1
-                await asyncio.sleep(0.05)
+            async with session.get(url, headers=HEADERS, timeout=12) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict):
+                        raw = data.get("data", [])
+                        items = raw if isinstance(raw, list) else raw.get("courses") or raw.get("records") or []
+                        add_courses(items)
         except Exception:
-            break
+            pass
+
+    # 2. Extract Category Tree & aggregate courses from each category
+    category_endpoints = [
+        f"{API_BASE}/categories?userId=",
+        f"{API_BASE}/exam-categories?userId=",
+        f"{API_BASE}/course-categories?userId=",
+        "https://www.selectionway.com/api/categories?userId=",
+        "https://www.selectionway.com/api/exam-categories?userId="
+    ]
+
+    cat_ids = set()
+    for c_url in category_endpoints:
+        try:
+            async with session.get(c_url, headers=HEADERS, timeout=12) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    raw_cats = data.get("data", [])
+                    if isinstance(raw_cats, list):
+                        for cat in raw_cats:
+                            cid = cat.get("id") or cat.get("_id") or cat.get("categoryId")
+                            if cid:
+                                cat_ids.add(cid)
+        except Exception:
+            pass
+
+    # Query all detected categories in parallel
+    if cat_ids:
+        cat_tasks = [
+            session.get(f"{API_BASE}/courses/active?categoryId={cid}&userId=", headers=HEADERS, timeout=15)
+            for cid in cat_ids
+        ]
+        responses = await asyncio.gather(*cat_tasks, return_exceptions=True)
+        for r in responses:
+            if hasattr(r, 'status') and r.status == 200:
+                try:
+                    data = await r.json(content_type=None)
+                    raw = data.get("data", [])
+                    items = raw if isinstance(raw, list) else raw.get("courses") or []
+                    add_courses(items)
+                except Exception:
+                    pass
+
+    # 3. Fallback to base 31 if nothing else succeeded
+    if not all_courses:
+        try:
+            async with session.get(f"{API_BASE}/courses/active?userId=", headers=HEADERS, timeout=15) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    raw = data.get("data", [])
+                    add_courses(raw if isinstance(raw, list) else [])
+        except Exception:
+            pass
 
     return all_courses
 
