@@ -45,44 +45,55 @@ def extract_hash(item: dict) -> str:
     return ""
 
 async def fetch_folder_items_safe(session: aiohttp.ClientSession, headers: dict, course_id: str, folder_id: str) -> list:
+    """Fetches folder contents using both course and batch API endpoints."""
     all_items = []
     offset = 0
     limit = 100
 
-    while True:
-        url = f"{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit={limit}&offset={offset}"
-        try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
-                if r.status != 200:
-                    break
-                res_data = await r.json()
-                data = res_data.get("data", [])
-                items = []
-                if isinstance(data, list):
-                    items = data
-                elif isinstance(data, dict):
-                    items = data.get("courseContent", []) or data.get("batchContent", []) or data.get("contents", []) or []
+    # Try both endpoints to support Courses and Batches
+    endpoints = [
+        f"{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit={limit}&offset=",
+        f"{apiurl}/v2/batch/content/get?batchId={course_id}&folderId={folder_id}&limit={limit}&offset="
+    ]
 
-                if not items:
-                    break
-                all_items.extend(items)
-                if len(items) < limit:
-                    break
-                offset += limit
-                if offset > 3000:
-                    break
-        except Exception:
+    for base_endpoint in endpoints:
+        offset = 0
+        while True:
+            url = f"{base_endpoint}{offset}"
+            try:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status != 200:
+                        break
+                    res_data = await r.json()
+                    data = res_data.get("data", [])
+                    items = []
+                    if isinstance(data, list):
+                        items = data
+                    elif isinstance(data, dict):
+                        items = data.get("courseContent", []) or data.get("batchContent", []) or data.get("contents", []) or []
+
+                    if not items:
+                        break
+                    all_items.extend(items)
+                    if len(items) < limit:
+                        break
+                    offset += limit
+                    if offset > 3000:
+                        break
+            except Exception:
+                break
+        if all_items:
             break
 
     return all_items
 
 def is_folder(item: dict) -> bool:
-    """Bulletproof folder detection matching all Classplus schema variations."""
+    """Detects folder items across all Classplus schema variations."""
     if item.get("isFolder") in (1, "1", True, "true"):
         return True
-    if item.get("contentType") in (3, "3", "folder"):
+    if str(item.get("contentType", "")) in ("3", "folder"):
         return True
-    if item.get("type") in ("folder", "subject", "chapter", "topic", "category"):
+    if str(item.get("type", "")).lower() in ("folder", "subject", "chapter", "topic", "category"):
         return True
     if item.get("hasSubFolders") in (1, "1", True, "true"):
         return True
@@ -137,7 +148,7 @@ def resolve_node_url_instant(item: dict, user_id: str, org_id: str, claims: dict
     return "PDF", f"https://cdn-wl-assets.classplus.co/production/{org_id}/{item_id}.pdf"
 
 async def fast_bfs_extractor(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, claims: dict, stats: dict) -> list:
-    """Deep parallel traversal that visits every nested branch."""
+    """Breadth-First Search extractor to guarantee all subfolders and resources are traversed."""
     collected = []
     queue = [("0", "")]
     seen_folders = {"0"}
@@ -190,23 +201,30 @@ async def fast_bfs_extractor(session: aiohttp.ClientSession, headers: dict, cour
 
 async def fetch_live_videos_fast(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, stats: dict) -> list:
     collected = []
-    try:
-        url = f"{apiurl}/v2/course/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0"
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
-            if r.status == 200:
-                data = (await r.json()).get("data", {})
-                vids = data.get("list", []) or data.get("videos", [])
-                for vid in vids:
-                    vname = (vid.get("name") or vid.get("title") or "Live Lecture").strip()
-                    v_hash = extract_hash(vid)
-                    live_token = vid.get("liveSessionId") or vid.get("contentHashId") or ""
-                    if v_hash:
-                        stream_url = f"https://media-cdn.classplusapp.com/{org_id}/lc/{v_hash}/master.m3u8?liveSessionId={quote(str(live_token))}&user_id={user_id}"
-                        stats["videos"] += 1
-                        collected.append(f"(live/Recording class) {vname}: {stream_url}")
-    except Exception:
-        pass
+    endpoints = [
+        f"{apiurl}/v2/course/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0",
+        f"{apiurl}/v2/batch/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0"
+    ]
+    for url in endpoints:
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status == 200:
+                    data = (await r.json()).get("data", {})
+                    vids = data.get("list", []) or data.get("videos", [])
+                    for vid in vids:
+                        vname = (vid.get("name") or vid.get("title") or "Live Lecture").strip()
+                        v_hash = extract_hash(vid)
+                        live_token = vid.get("liveSessionId") or vid.get("contentHashId") or ""
+                        if v_hash:
+                            stream_url = f"https://media-cdn.classplusapp.com/{org_id}/lc/{v_hash}/master.m3u8?liveSessionId={quote(str(live_token))}&user_id={user_id}"
+                            stats["videos"] += 1
+                            collected.append(f"(live/Recording class) {vname}: {stream_url}")
+            if collected:
+                break
+        except Exception:
+            pass
     return collected
+
 
 # =========================================================
 #                    PYROGRAM HANDLERS
@@ -365,7 +383,7 @@ async def classplus_txt(app, message):
     user_id = str(claims.get("id", ""))
     org_id = str(claims.get("orgId", ""))
 
-    proc_msg = await message.reply(f"⚡️ <b>Extracting:</b> <code>{course_name}</code>\n<i>Deep BFS search across all folders...</i>")
+    proc_msg = await message.reply(f"⚡️ <b>Extracting:</b> <code>{course_name}</code>\n<i>Scanning all course branches...</i>")
 
     stats = {"videos": 0, "pdfs": 0, "tests": 0}
     out = []
