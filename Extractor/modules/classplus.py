@@ -52,7 +52,7 @@ async def fetch_folder_items_safe(session: aiohttp.ClientSession, headers: dict,
     while True:
         url = f"{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit={limit}&offset={offset}"
         try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status != 200:
                     break
                 res_data = await r.json()
@@ -69,12 +69,26 @@ async def fetch_folder_items_safe(session: aiohttp.ClientSession, headers: dict,
                 if len(items) < limit:
                     break
                 offset += limit
-                if offset > 2000:
+                if offset > 3000:
                     break
         except Exception:
             break
 
     return all_items
+
+def is_folder(item: dict) -> bool:
+    """Bulletproof folder detection matching all Classplus schema variations."""
+    if item.get("isFolder") in (1, "1", True, "true"):
+        return True
+    if item.get("contentType") in (3, "3", "folder"):
+        return True
+    if item.get("type") in ("folder", "subject", "chapter", "topic", "category"):
+        return True
+    if item.get("hasSubFolders") in (1, "1", True, "true"):
+        return True
+    if item.get("resourceCount", 0) > 0 and not extract_hash(item) and not str(item.get("url", "")).startswith("http"):
+        return True
+    return False
 
 def resolve_node_url_instant(item: dict, user_id: str, org_id: str, claims: dict) -> tuple:
     name = (item.get("name") or item.get("title") or "").strip()
@@ -123,12 +137,12 @@ def resolve_node_url_instant(item: dict, user_id: str, org_id: str, claims: dict
     return "PDF", f"https://cdn-wl-assets.classplus.co/production/{org_id}/{item_id}.pdf"
 
 async def fast_bfs_extractor(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, claims: dict, stats: dict) -> list:
-    """Fast, queue-based traversal that only queries real folders."""
+    """Deep parallel traversal that visits every nested branch."""
     collected = []
     queue = [("0", "")]
     seen_folders = {"0"}
     seen_items = set()
-    sem = asyncio.Semaphore(12)
+    sem = asyncio.Semaphore(15)
 
     while queue:
         current_layer = queue[:]
@@ -147,19 +161,9 @@ async def fast_bfs_extractor(session: aiohttp.ClientSession, headers: dict, cour
                     seen_items.add(item_id)
 
                     name = (item.get("name") or item.get("title") or "Untitled").strip()
-                    ctype = str(item.get("contentType", ""))
-                    
-                    # Direct check: in Classplus contentType 3 or isFolder 1 is a folder
-                    is_folder = (
-                        ctype == "3" 
-                        or item.get("isFolder") in (1, "1", True) 
-                        or item.get("type") in ("folder", "subject", "chapter", "topic")
-                        or item.get("hasSubFolders") in (1, "1", True)
-                    )
-
                     curr_prefix = f"{prefix}({name}) " if prefix else f"({name}) "
 
-                    if is_folder:
+                    if is_folder(item):
                         if item_id not in seen_folders:
                             seen_folders.add(item_id)
                             next_dirs.append((item_id, curr_prefix))
@@ -188,7 +192,7 @@ async def fetch_live_videos_fast(session: aiohttp.ClientSession, headers: dict, 
     collected = []
     try:
         url = f"{apiurl}/v2/course/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0"
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
             if r.status == 200:
                 data = (await r.json()).get("data", {})
                 vids = data.get("list", []) or data.get("videos", [])
@@ -361,7 +365,7 @@ async def classplus_txt(app, message):
     user_id = str(claims.get("id", ""))
     org_id = str(claims.get("orgId", ""))
 
-    proc_msg = await message.reply(f"⚡️ <b>Extracting:</b> <code>{course_name}</code>\n<i>Running BFS parallel scanner...</i>")
+    proc_msg = await message.reply(f"⚡️ <b>Extracting:</b> <code>{course_name}</code>\n<i>Deep BFS search across all folders...</i>")
 
     stats = {"videos": 0, "pdfs": 0, "tests": 0}
     out = []
