@@ -45,7 +45,6 @@ def extract_hash(item: dict) -> str:
     return ""
 
 async def fetch_folder_items_safe(session: aiohttp.ClientSession, headers: dict, course_id: str, folder_id: str) -> list:
-    """Fetches folder contents safely handling both pagination and list/dict schemas."""
     all_items = []
     offset = 0
     limit = 100
@@ -53,7 +52,7 @@ async def fetch_folder_items_safe(session: aiohttp.ClientSession, headers: dict,
     while True:
         url = f"{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit={limit}&offset={offset}"
         try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=12)) as r:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 if r.status != 200:
                     break
                 res_data = await r.json()
@@ -123,62 +122,65 @@ def resolve_node_url_instant(item: dict, user_id: str, org_id: str, claims: dict
     # 4. Fallback CloudFront Document
     return "PDF", f"https://cdn-wl-assets.classplus.co/production/{org_id}/{item_id}.pdf"
 
-async def recursive_extract(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, claims: dict, folder_id: str = "0", prefix: str = "", seen_folders: set = None, seen_items: set = None, stats: dict = None, sem: asyncio.Semaphore = None) -> list:
-    if seen_folders is None:
-        seen_folders = set()
-    if seen_items is None:
-        seen_items = set()
-    if stats is None:
-        stats = {"videos": 0, "pdfs": 0, "tests": 0}
-    if sem is None:
-        sem = asyncio.Semaphore(30)
-
-    if folder_id in seen_folders:
-        return []
-    seen_folders.add(folder_id)
-
-    items = await fetch_folder_items_safe(session, headers, course_id, folder_id)
-    if not items:
-        return []
-
+async def fast_bfs_extractor(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, claims: dict, stats: dict) -> list:
+    """Fast, queue-based traversal that only queries real folders."""
     collected = []
-    child_tasks = []
+    queue = [("0", "")]
+    seen_folders = {"0"}
+    seen_items = set()
+    sem = asyncio.Semaphore(12)
 
-    async def evaluate_item(item):
-        item_id = str(item.get("id"))
-        if item_id in seen_items:
-            return []
-        seen_items.add(item_id)
+    while queue:
+        current_layer = queue[:]
+        queue = []
 
-        name = (item.get("name") or item.get("title") or "Untitled").strip()
-        curr_prefix = f"{prefix}({name}) " if prefix else f"({name}) "
+        async def process_folder(fid, prefix):
+            async with sem:
+                items = await fetch_folder_items_safe(session, headers, course_id, fid)
+                local_results = []
+                next_dirs = []
 
-        # Probe if item has child items inside
-        sub_items = await fetch_folder_items_safe(session, headers, course_id, item_id)
-        if sub_items and len(sub_items) > 0:
-            return await recursive_extract(
-                session, headers, course_id, user_id, org_id, claims,
-                folder_id=item_id, prefix=curr_prefix,
-                seen_folders=seen_folders, seen_items=seen_items,
-                stats=stats, sem=sem
-            )
-        else:
-            tag, final_url = resolve_node_url_instant(item, user_id, org_id, claims)
-            if tag == "VIDEO":
-                stats["videos"] += 1
-            elif tag == "PDF":
-                stats["pdfs"] += 1
-            elif tag == "TEST":
-                stats["tests"] += 1
-            return [f"{prefix}{name}: {final_url}"]
+                for item in items:
+                    item_id = str(item.get("id"))
+                    if item_id in seen_items:
+                        continue
+                    seen_items.add(item_id)
 
-    async def bounded_worker(item):
-        async with sem:
-            return await evaluate_item(item)
+                    name = (item.get("name") or item.get("title") or "Untitled").strip()
+                    ctype = str(item.get("contentType", ""))
+                    
+                    # Direct check: in Classplus contentType 3 or isFolder 1 is a folder
+                    is_folder = (
+                        ctype == "3" 
+                        or item.get("isFolder") in (1, "1", True) 
+                        or item.get("type") in ("folder", "subject", "chapter", "topic")
+                        or item.get("hasSubFolders") in (1, "1", True)
+                    )
 
-    results = await asyncio.gather(*(bounded_worker(it) for it in items))
-    for res in results:
-        collected.extend(res)
+                    curr_prefix = f"{prefix}({name}) " if prefix else f"({name}) "
+
+                    if is_folder:
+                        if item_id not in seen_folders:
+                            seen_folders.add(item_id)
+                            next_dirs.append((item_id, curr_prefix))
+                    else:
+                        tag, final_url = resolve_node_url_instant(item, user_id, org_id, claims)
+                        if tag == "VIDEO":
+                            stats["videos"] += 1
+                        elif tag == "PDF":
+                            stats["pdfs"] += 1
+                        elif tag == "TEST":
+                            stats["tests"] += 1
+                        local_results.append(f"{prefix}{name}: {final_url}")
+
+                return local_results, next_dirs
+
+        tasks = [process_folder(fid, prefix) for fid, prefix in current_layer]
+        results = await asyncio.gather(*tasks)
+
+        for items_found, new_folders in results:
+            collected.extend(items_found)
+            queue.extend(new_folders)
 
     return collected
 
@@ -186,7 +188,7 @@ async def fetch_live_videos_fast(session: aiohttp.ClientSession, headers: dict, 
     collected = []
     try:
         url = f"{apiurl}/v2/course/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0"
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
             if r.status == 200:
                 data = (await r.json()).get("data", {})
                 vids = data.get("list", []) or data.get("videos", [])
@@ -201,7 +203,6 @@ async def fetch_live_videos_fast(session: aiohttp.ClientSession, headers: dict, 
     except Exception:
         pass
     return collected
-
 
 # =========================================================
 #                    PYROGRAM HANDLERS
@@ -360,7 +361,7 @@ async def classplus_txt(app, message):
     user_id = str(claims.get("id", ""))
     org_id = str(claims.get("orgId", ""))
 
-    proc_msg = await message.reply(f"⚡️ <b>Extracting:</b> <code>{course_name}</code>\n<i>Scanning all nested folders and DRM links...</i>")
+    proc_msg = await message.reply(f"⚡️ <b>Extracting:</b> <code>{course_name}</code>\n<i>Running BFS parallel scanner...</i>")
 
     stats = {"videos": 0, "pdfs": 0, "tests": 0}
     out = []
@@ -370,7 +371,7 @@ async def classplus_txt(app, message):
         out.append(f"(Course Thumbnail) Course Thumbnail : {thumb}")
 
     async with aiohttp.ClientSession(headers=headers) as session:
-        main_task = recursive_extract(session, headers, course_id, user_id, org_id, claims, folder_id="0", prefix="", stats=stats)
+        main_task = fast_bfs_extractor(session, headers, course_id, user_id, org_id, claims, stats=stats)
         live_task = fetch_live_videos_fast(session, headers, course_id, user_id, org_id, stats=stats)
 
         links, live_links = await asyncio.gather(main_task, live_task)
