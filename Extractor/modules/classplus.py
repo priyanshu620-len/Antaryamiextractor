@@ -44,74 +44,46 @@ def extract_hash(item: dict) -> str:
             return m2.group(1)
     return ""
 
-async def get_all_folder_items(session: aiohttp.ClientSession, headers: dict, course_id: str, folder_id: str) -> list:
+async def fetch_folder_page(session: aiohttp.ClientSession, headers: dict, course_id: str, folder_id: str, offset: int = 0) -> list:
+    url = f"{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit=100&offset={offset}"
+    try:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
+            if r.status != 200:
+                return []
+            res_data = await r.json()
+            data = res_data.get("data", [])
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("courseContent", []) or data.get("batchContent", []) or data.get("contents", []) or []
+    except Exception:
+        pass
+    return []
+
+async def fetch_all_folder_items(session: aiohttp.ClientSession, headers: dict, course_id: str, folder_id: str) -> list:
     all_items = []
     offset = 0
     limit = 100
 
     while True:
-        url = f"{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit={limit}&offset={offset}"
-        try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                if r.status != 200:
-                    break
-                res_data = await r.json()
-                data = res_data.get("data", [])
-                items = []
-                if isinstance(data, list):
-                    items = data
-                elif isinstance(data, dict):
-                    items = data.get("courseContent", []) or data.get("batchContent", []) or data.get("contents", []) or []
-
-                if not items:
-                    break
-                all_items.extend(items)
-                if len(items) < limit:
-                    break
-                offset += limit
-        except Exception:
+        items = await fetch_folder_page(session, headers, course_id, folder_id, offset)
+        if not items:
+            break
+        all_items.extend(items)
+        if len(items) < limit:
+            break
+        offset += limit
+        if offset > 1000:  # Safety guardrail to prevent infinite loops
             break
 
     return all_items
 
-async def fetch_signed_pdf(session: aiohttp.ClientSession, headers: dict, course_id: str, content_id: str, org_id: str) -> str:
-    endpoints = [
-        ("GET", f"{apiurl}/v2/course/content/load?courseId={course_id}&contentId={content_id}", None),
-        ("POST", f"{apiurl}/caching/v2/course/content/load", {"courseId": int(course_id), "contentId": int(content_id)}),
-        ("GET", f"{apiurl}/v2/course/content/{content_id}?courseId={course_id}", None)
-    ]
-    for method, url, payload in endpoints:
-        try:
-            if method == "GET":
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                    if r.status == 200:
-                        d = (await r.json()).get("data", {})
-            else:
-                async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                    if r.status == 200:
-                        d = (await r.json()).get("data", {})
-
-            for key in ["url", "documentUrl", "fileUrl", "signedUrl", "attachmentUrl", "downloadUrl"]:
-                val = d.get(key)
-                if val and isinstance(val, str) and val.startswith("http") and (".pdf" in val or "amazonaws.com" in val):
-                    return val
-
-            uuid_val = d.get("uuid") or d.get("fileId")
-            if uuid_val:
-                clean = str(uuid_val).split("__")[-1]
-                if not clean.endswith(".pdf"):
-                    clean += ".pdf"
-                return f"https://cdn-wl-assets.classplus.co/production/{org_id}/{clean}"
-        except Exception:
-            continue
-    return ""
-
-async def resolve_node_url(session: aiohttp.ClientSession, headers: dict, item: dict, course_id: str, user_id: str, org_id: str, claims: dict) -> tuple:
+def resolve_node_url_instant(item: dict, user_id: str, org_id: str, claims: dict) -> tuple:
     name = (item.get("name") or item.get("title") or "").strip()
     ctype = str(item.get("contentType", ""))
     item_id = str(item.get("id", ""))
 
-    # 1. Tests & Quizzes (Student CMS link)
+    # 1. Tests & Quizzes (Student CMS)
     test_token = item.get("token") or item.get("testToken")
     test_id = item.get("testId")
     if (ctype == "4" or "mock test" in name.lower()) and test_token and test_id:
@@ -119,12 +91,6 @@ async def resolve_node_url(session: aiohttp.ClientSession, headers: dict, item: 
         return "TEST", f"https://student-cms.classplusapp.com?token={test_token}&testId={test_id}&user_email={email}&user_id={user_id}&defaultLanguage=en&isGenericShare=false"
 
     # 2. PDF Documents & Worksheets
-    is_pdf_node = bool(
-        ctype in ["2", "5"]
-        or name.lower().endswith(".pdf")
-        or any(k in name.lower() for k in ["notes", "dpp", "schedule", "planner", "sample", "pyq"])
-    )
-
     raw_url = item.get("url") or item.get("documentUrl") or item.get("fileUrl") or ""
     if raw_url and isinstance(raw_url, str) and ".pdf" in raw_url:
         return "PDF", raw_url
@@ -136,13 +102,10 @@ async def resolve_node_url(session: aiohttp.ClientSession, headers: dict, item: 
             if not clean_uuid.endswith(".pdf"):
                 clean_uuid += ".pdf"
             return "PDF", f"https://cdn-wl-assets.classplus.co/production/{org_id}/{clean_uuid}"
+        if clean_uuid.endswith(".pdf"):
+            return "PDF", f"https://cdn-wl-assets.classplus.co/production/{org_id}/{clean_uuid}"
 
-    if is_pdf_node:
-        signed_pdf = await fetch_signed_pdf(session, headers, course_id, item_id, org_id)
-        if signed_pdf:
-            return "PDF", signed_pdf
-
-    # 3. Clean Original DRM Video Streams
+    # 3. Encrypted Video Streams
     v_hash = extract_hash(item)
     c_hash = item.get("contentHashId") or item.get("encryptedContentId") or item.get("contentId")
     thumb = item.get("thumbnailUrl") or item.get("thumbnail") or ""
@@ -161,55 +124,72 @@ async def resolve_node_url(session: aiohttp.ClientSession, headers: dict, item: 
     # 4. Fallback CloudFront Static Document
     return "PDF", f"https://cdn-wl-assets.classplus.co/production/{org_id}/{item_id}.pdf"
 
-async def traverse_course_tree(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, claims: dict, folder_id: str = "0", prefix: str = "", seen: set = None, stats: dict = None) -> list:
-    if seen is None:
-        seen = set()
-    if stats is None:
-        stats = {"videos": 0, "pdfs": 0, "tests": 0}
-
-    items = await get_all_folder_items(session, headers, course_id, folder_id)
+async def fast_bfs_extract(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, claims: dict, stats: dict) -> list:
+    """Non-blocking Breadth-First-Search traversal to extract all items in parallel."""
     collected = []
+    queue = [("0", "")]  # (folder_id, prefix)
+    seen_folders = {"0"}
+    seen_items = set()
 
-    for item in items:
-        item_id = str(item.get("id"))
-        if item_id in seen:
-            continue
-        seen.add(item_id)
+    sem = asyncio.Semaphore(20)
 
-        name = (item.get("name") or item.get("title") or "Untitled").strip()
-        ctype = str(item.get("contentType", ""))
+    while queue:
+        current_batch = queue[:]
+        queue.clear()
 
-        children = await get_all_folder_items(session, headers, course_id, item_id)
-        is_folder = (
-            len(children) > 0
-            or ctype == "3"
-            or item.get("isFolder") in (1, True, "1")
-            or item.get("type") == "folder"
-            or item.get("hasSubFolders") in (1, True, "1")
-        )
+        async def process_folder(fid, prefix):
+            async with sem:
+                items = await fetch_all_folder_items(session, headers, course_id, fid)
+                local_collected = []
+                next_folders = []
 
-        current_prefix = f"{prefix}({name}) " if prefix else f"({name}) "
+                for item in items:
+                    item_id = str(item.get("id"))
+                    if item_id in seen_items:
+                        continue
+                    seen_items.add(item_id)
 
-        if is_folder:
-            sub_res = await traverse_course_tree(session, headers, course_id, user_id, org_id, claims, folder_id=item_id, prefix=current_prefix, seen=seen, stats=stats)
-            collected.extend(sub_res)
-        else:
-            tag, final_url = await resolve_node_url(session, headers, item, course_id, user_id, org_id, claims)
-            if tag == "VIDEO":
-                stats["videos"] += 1
-            elif tag == "PDF":
-                stats["pdfs"] += 1
-            elif tag == "TEST":
-                stats["tests"] += 1
-            collected.append(f"{prefix}{name}: {final_url}")
+                    name = (item.get("name") or item.get("title") or "Untitled").strip()
+                    ctype = str(item.get("contentType", ""))
+                    is_folder = (
+                        ctype == "3" 
+                        or item.get("isFolder") in (1, True, "1") 
+                        or item.get("type") == "folder" 
+                        or item.get("hasSubFolders") in (1, True, "1")
+                    )
+
+                    curr_prefix = f"{prefix}({name}) " if prefix else f"({name}) "
+
+                    if is_folder:
+                        if item_id not in seen_folders:
+                            seen_folders.add(item_id)
+                            next_folders.append((item_id, curr_prefix))
+                    else:
+                        tag, final_url = resolve_node_url_instant(item, user_id, org_id, claims)
+                        if tag == "VIDEO":
+                            stats["videos"] += 1
+                        elif tag == "PDF":
+                            stats["pdfs"] += 1
+                        elif tag == "TEST":
+                            stats["tests"] += 1
+                        local_collected.append(f"{prefix}{name}: {final_url}")
+
+                return local_collected, next_folders
+
+        tasks = [process_folder(fid, prefix) for fid, prefix in current_batch]
+        results = await asyncio.gather(*tasks)
+
+        for local_items, next_dirs in results:
+            collected.extend(local_items)
+            queue.extend(next_dirs)
 
     return collected
 
-async def fetch_live_videos_async(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, stats: dict) -> list:
+async def fetch_live_videos_fast(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, stats: dict) -> list:
     collected = []
     try:
         url = f"{apiurl}/v2/course/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0"
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
             if r.status == 200:
                 data = (await r.json()).get("data", {})
                 vids = data.get("list", []) or data.get("videos", [])
@@ -224,6 +204,7 @@ async def fetch_live_videos_async(session: aiohttp.ClientSession, headers: dict,
     except Exception:
         pass
     return collected
+
 
 # =========================================================
 #                    PYROGRAM HANDLERS
@@ -280,7 +261,7 @@ async def classplus_txt(app, message):
                 user_otp = await app.ask(
                     message.chat.id,
                     "📱 <b>OTP Verification</b>\n\n"
-                    f"OTP sent to <code>{mobile}</code>.\nEnter OTP to continue:",
+                    f"OTP sent to <code>{mobile}</code>.\nEnter OTP:",
                     timeout=180
                 )
                 otp = user_otp.text.strip()
@@ -303,7 +284,7 @@ async def classplus_txt(app, message):
                 else:
                     return await message.reply("❌ Invalid OTP or login failed.")
             else:
-                return await message.reply("❌ Failed to generate OTP. Please check Org Code and Mobile Number.")
+                return await message.reply("❌ Failed to generate OTP. Check Org Code & Mobile.")
         except Exception as e:
             return await message.reply(f"Error: {e}")
 
@@ -320,8 +301,8 @@ async def classplus_txt(app, message):
     if not claims or "orgId" not in claims:
         return await message.reply("❌ Invalid Access Token.")
 
-    # Fetch Courses & Batches
-    status_msg = await message.reply("🔎 <b>Fetching Available Courses and Batches...</b>")
+    # Fetch Courses & Batches in Parallel
+    status_msg = await message.reply("🔎 <b>Fetching Available Courses...</b>")
 
     headers = {
         'x-access-token': token,
@@ -334,29 +315,29 @@ async def classplus_txt(app, message):
     }
 
     courses = []
-    # 1. Tab category store courses
-    r1 = s.get(f"{apiurl}/v2/courses?tabCategoryId=1", headers=headers)
-    if r1.status_code == 200:
-        courses.extend(r1.json().get("data", {}).get("courses", []))
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async def fetch_c1():
+            async with session.get(f"{apiurl}/v2/courses?tabCategoryId=1") as r:
+                return (await r.json()).get("data", {}).get("courses", []) if r.status == 200 else []
+        async def fetch_c2():
+            async with session.get(f"{apiurl}/v2/courses/enrolled") as r:
+                return (await r.json()).get("data", {}).get("courses", []) if r.status == 200 else []
+        async def fetch_c3():
+            async with session.get(f"{apiurl}/v2/batches/enrolled") as r:
+                return (await r.json()).get("data", {}).get("batches", []) if r.status == 200 else []
 
-    # 2. Enrolled store courses
-    r2 = s.get(f"{apiurl}/v2/courses/enrolled", headers=headers)
-    if r2.status_code == 200:
-        for c in r2.json().get("data", {}).get("courses", []):
+        r1, r2, r3 = await asyncio.gather(fetch_c1(), fetch_c2(), fetch_c3())
+        courses.extend(r1)
+        for c in r2:
             if not any(str(x.get("id")) == str(c.get("id")) for x in courses):
                 courses.append(c)
-
-    # 3. Batches
-    r3 = s.get(f"{apiurl}/v2/batches/enrolled", headers=headers)
-    if r3.status_code == 200:
-        for b in r3.json().get("data", {}).get("batches", []):
+        for b in r3:
             b["name"] = f"[BATCH] {b.get('name', 'Batch')}"
             courses.append(b)
 
     if not courses:
         return await status_msg.edit_text("⚠️ No active courses or batches found on this account.")
 
-    # Format course choice list
     text = f"📚 <b>Available Batches & Courses ({claims.get('orgCode')})</b>\n\n"
     course_map = {}
     for idx, c in enumerate(courses, start=1):
@@ -368,7 +349,7 @@ async def classplus_txt(app, message):
     await status_msg.delete()
     selected_prompt = await app.ask(
         message.chat.id,
-        f"{text}\n👇 <b>Send the index number to extract:</b>",
+        f"{text}\n👇 <b>Send index number to extract:</b>",
         timeout=180
     )
 
@@ -383,7 +364,7 @@ async def classplus_txt(app, message):
     user_id = str(claims.get("id", ""))
     org_id = str(claims.get("orgId", ""))
 
-    proc_msg = await message.reply(f"⏳ <b>Extracting:</b> <code>{course_name}</code>\n<i>Recursively extracting DRM streams, PDFs, and tests...</i>")
+    proc_msg = await message.reply(f"⚡️ <b>Extracting:</b> <code>{course_name}</code>\n<i>Parallel scanning in progress...</i>")
 
     stats = {"videos": 0, "pdfs": 0, "tests": 0}
     out = []
@@ -393,16 +374,16 @@ async def classplus_txt(app, message):
         out.append(f"(Course Thumbnail) Course Thumbnail : {thumb}")
 
     async with aiohttp.ClientSession(headers=headers) as session:
-        links = await traverse_course_tree(session, headers, course_id, user_id, org_id, claims, folder_id="0", prefix="", stats=stats)
-        out.extend(links)
+        main_task = fast_bfs_extract(session, headers, course_id, user_id, org_id, claims, stats=stats)
+        live_task = fetch_live_videos_fast(session, headers, course_id, user_id, org_id, stats=stats)
 
-        live_links = await fetch_live_videos_async(session, headers, course_id, user_id, org_id, stats=stats)
+        links, live_links = await asyncio.gather(main_task, live_task)
+        out.extend(links)
         out.extend(live_links)
 
     if not out:
         return await proc_msg.edit_text("❌ Course is empty or extraction failed.")
 
-    # Clean file name and save
     clean_name = re.sub(r'[^a-zA-Z0-9_\- ]', '', course_name).replace(' ', '_')
     file_path = f"{clean_name}.txt"
 
