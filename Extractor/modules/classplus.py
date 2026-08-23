@@ -47,7 +47,7 @@ def extract_hash(item: dict) -> str:
 async def fetch_folder_page(session: aiohttp.ClientSession, headers: dict, course_id: str, folder_id: str, offset: int = 0) -> list:
     url = f"{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit=100&offset={offset}"
     try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
             if r.status != 200:
                 return []
             res_data = await r.json()
@@ -73,10 +73,27 @@ async def fetch_all_folder_items(session: aiohttp.ClientSession, headers: dict, 
         if len(items) < limit:
             break
         offset += limit
-        if offset > 1000:  # Safety guardrail to prevent infinite loops
+        if offset > 2000:
             break
 
     return all_items
+
+def is_folder_item(item: dict) -> bool:
+    """Accurately determines if an item is a container/folder."""
+    if item.get("isFolder") in (1, True, "1", "true"):
+        return True
+    if item.get("type") in ("folder", "subject", "chapter", "topic", "category"):
+        return True
+    if item.get("hasSubFolders") in (1, True, "1", "true"):
+        return True
+    if str(item.get("contentType")) == "3":
+        return True
+    
+    # If it has resource children count > 0 and no direct video/pdf url
+    if item.get("resourceCount", 0) > 0 and not extract_hash(item) and not item.get("url"):
+        return True
+        
+    return False
 
 def resolve_node_url_instant(item: dict, user_id: str, org_id: str, claims: dict) -> tuple:
     name = (item.get("name") or item.get("title") or "").strip()
@@ -127,11 +144,11 @@ def resolve_node_url_instant(item: dict, user_id: str, org_id: str, claims: dict
 async def fast_bfs_extract(session: aiohttp.ClientSession, headers: dict, course_id: str, user_id: str, org_id: str, claims: dict, stats: dict) -> list:
     """Non-blocking Breadth-First-Search traversal to extract all items in parallel."""
     collected = []
-    queue = [("0", "")]  # (folder_id, prefix)
+    queue = [("0", "")]
     seen_folders = {"0"}
     seen_items = set()
 
-    sem = asyncio.Semaphore(20)
+    sem = asyncio.Semaphore(25)
 
     while queue:
         current_batch = queue[:]
@@ -150,17 +167,9 @@ async def fast_bfs_extract(session: aiohttp.ClientSession, headers: dict, course
                     seen_items.add(item_id)
 
                     name = (item.get("name") or item.get("title") or "Untitled").strip()
-                    ctype = str(item.get("contentType", ""))
-                    is_folder = (
-                        ctype == "3" 
-                        or item.get("isFolder") in (1, True, "1") 
-                        or item.get("type") == "folder" 
-                        or item.get("hasSubFolders") in (1, True, "1")
-                    )
-
                     curr_prefix = f"{prefix}({name}) " if prefix else f"({name}) "
 
-                    if is_folder:
+                    if is_folder_item(item):
                         if item_id not in seen_folders:
                             seen_folders.add(item_id)
                             next_folders.append((item_id, curr_prefix))
@@ -189,7 +198,7 @@ async def fetch_live_videos_fast(session: aiohttp.ClientSession, headers: dict, 
     collected = []
     try:
         url = f"{apiurl}/v2/course/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0"
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
             if r.status == 200:
                 data = (await r.json()).get("data", {})
                 vids = data.get("list", []) or data.get("videos", [])
@@ -204,7 +213,6 @@ async def fetch_live_videos_fast(session: aiohttp.ClientSession, headers: dict, 
     except Exception:
         pass
     return collected
-
 
 # =========================================================
 #                    PYROGRAM HANDLERS
@@ -301,7 +309,6 @@ async def classplus_txt(app, message):
     if not claims or "orgId" not in claims:
         return await message.reply("❌ Invalid Access Token.")
 
-    # Fetch Courses & Batches in Parallel
     status_msg = await message.reply("🔎 <b>Fetching Available Courses...</b>")
 
     headers = {
