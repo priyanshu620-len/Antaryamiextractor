@@ -176,9 +176,12 @@ async def rasonly_handler(client: Client, message: Message):
         with open(filename, "w", encoding="utf-8") as f:
             f.write("\n".join(file_lines).strip() + "\n")
 
+        # Sanitize and truncate course title to avoid exceeding Telegram's caption limit
+        safe_course_title = (course_title[:100] + "...") if len(course_title) > 100 else course_title
+
         caption = (
             f"**🎯 ᴇxᴛʀᴀᴄᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ**\n\n"
-            f"> 📚 **Batch Name:** `{course_title}`\n"
+            f"> 📚 **Batch Name:** `{safe_course_title}`\n"
             f"> 🆔 **Course ID:** `{target_pid}`\n"
             f"> 🎬 **Total Videos:** `{total_videos}`\n"
             f"> 📄 **Total PDFs:** `{total_pdfs}`\n"
@@ -186,6 +189,10 @@ async def rasonly_handler(client: Client, message: Message):
             f"> ⚡ **Platform:** `RASonly`\n\n"
             f"__Extracted by ONeX Extractor Bot__"
         )
+
+        # Hard guard for Telegram's 1024-character caption limit
+        if len(caption) > 1020:
+            caption = caption[:1015] + "..."
 
         await message.reply_document(
             document=filename,
