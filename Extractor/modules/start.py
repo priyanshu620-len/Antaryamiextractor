@@ -1,25 +1,34 @@
+import os
 import re
 import json
 import random
 import asyncio
-import os
+import logging
+import base64
 import requests
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor
+from bs4 import BeautifulSoup
+
 from pyrogram import filters, Client
 from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from pyrogram.enums import ParseMode
+
 from Extractor import app
 from config import OWNER_ID, CHANNEL_ID
+import config
+
 from Extractor.core import script
 from Extractor.core.func import subscribe, chk_user
+from Extractor.core.mongo import plans_db
+from Extractor.core.utils import forward_to_log
+from Extractor.html_converter.bot import handle_txt2html, show_txt2html_help
+
+# Module Imports
 from Extractor.modules.sway import cmd_selectionway
-# from Extractor.modules.appex_v1 import api_v1
-# from Extractor.modules.appex_v2 import appex_v2_txt
-# from Extractor.modules.appex_v3 import appex_v5_txt
 from Extractor.modules.appex_v4 import appex_v5_txt
 from Extractor.modules.classplus import classplus_txt
-from Extractor.modules.pw import pw_login
+from Extractor.modules.pw import pw_login, pw_mobile, pw_token
 from Extractor.modules.exampur import exampur_txt
 from Extractor.modules.careerwill import career_will
 from Extractor.modules.utk import handle_utk_logic
@@ -30,31 +39,56 @@ from Extractor.modules.kdlive import kdlive
 from Extractor.modules.iq import handle_iq_logic
 from Extractor.modules.getappxotp import send_otpp
 from Extractor.modules.findapi import findapis_extract
-from Extractor.modules.rg_vikramjeet import rgvikramjeet
+from Extractor.modules.rg_vikramjeet import rgvikramjeet, rgvikram_txt
 from Extractor.modules.adda import adda_command_handler
 from Extractor.modules.vision import scrape_vision_ias
-from Extractor.modules.rg_vikramjeet import rgvikramjeet
-from Extractor.core.utils import forward_to_log
 from Extractor.modules.enc import *
 
 from Extractor.modules.freecp import *
 from Extractor.modules.freeappx import *
 from Extractor.modules.freepw import *
-# from Extractor.modules.cds import handle_cds_callback
-
-from Extractor.core.mongo import plans_db
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import config
-import logging
-from Extractor.html_converter.bot import handle_txt2html, show_txt2html_help
-from bs4 import BeautifulSoup
-import base64
 
 thumb_path = "Extractor/thumbs/txt-5.jpg"
 THREADPOOL = ThreadPoolExecutor(max_workers=2000)
 TIMEOUT = 300  # 5 minutes timeout
 
+# -----------------------------------------------------------------------------
+# RASONLY CONSTANTS & HELPERS
+# -----------------------------------------------------------------------------
+RASONLY_BASE = "https://course.rasonly.com"
+RASONLY_HEADERS = {
+    "os": "android",
+    "version": "33",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "User-Agent": "okhttp/5.1.0",
+}
+RASONLY_COMMON = {"token": "123456789", "user_id": "5679", "dlb_grp_id": "1"}
+
+def rasonly_sanitize_filename(name: str) -> str:
+    """Removes invalid OS characters from course titles."""
+    return re.sub(r'[\\/*?:"<>|]', "", name).strip().replace(" ", "_")
+
+def rasonly_extract_pdf(item: dict) -> str | None:
+    """Finds PDF attachment URLs inside payload objects."""
+    item_str = str(item)
+    match = re.search(r'https?://[^\s\'"<>]+?\.pdf[^\s\'"<>]*', item_str, re.IGNORECASE)
+    if match:
+        return match.group(0).strip().rstrip('.,;)')
+    return None
+
+async def rasonly_post_api(session: aiohttp.ClientSession, path: str, payload: dict) -> dict:
+    """Asynchronous HTTP POST request handler for RASonly."""
+    try:
+        async with session.post(f"{RASONLY_BASE}{path}", headers=RASONLY_HEADERS, data=payload, timeout=15) as resp:
+            if resp.status == 200:
+                return await resp.json(content_type=None)
+    except Exception:
+        pass
+    return {}
+
+# -----------------------------------------------------------------------------
+# KEYBOARDS & MENUS
+# -----------------------------------------------------------------------------
 buttons = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("Lᴏɢɪɴ/Wɪᴛʜᴏᴜᴛ Lᴏɢɪɴ", callback_data="modes_")
@@ -91,6 +125,7 @@ custom_button = [
     ],
     [
         InlineKeyboardButton("📚 Sᴇʟᴇᴄᴛɪᴏɴ Wᴀʏ 📚", callback_data="sway_free"),
+        InlineKeyboardButton("🎯 RASᴏɴʟʏ 🎯", callback_data="rasonly_free"),
     ],
     [
         InlineKeyboardButton("𝐁 𝐀 𝐂 𝐊", callback_data="modes_"),
@@ -124,7 +159,9 @@ button1 = [
         InlineKeyboardButton("👑 Rᴀɴᴋᴇʀs Gᴜʀᴜᴋᴜʟ", callback_data="maintainer_")
     ],
     [
-        InlineKeyboardButton("𝐁 𝐀 𝐂 𝐊", callback_data="modes_")
+        InlineKeyboardButton("﹤", callback_data="modes_"),
+        InlineKeyboardButton("ʙ ᴀ ᴄ ᴋ", callback_data="modes_"),
+        InlineKeyboardButton("﹥", callback_data="next_1")
     ]
 ]
 
@@ -262,11 +299,12 @@ back_button = [
     ]
 ]
 
-
 def photo():
     return config.THUMB_URL
 
-
+# -----------------------------------------------------------------------------
+# START COMMAND
+# -----------------------------------------------------------------------------
 @app.on_message(filters.command("start"))
 async def start(_, message):
     join = await subscribe(_, message)
@@ -285,12 +323,246 @@ async def start(_, message):
             reply_markup=buttons
         )
 
+# -----------------------------------------------------------------------------
+# RASONLY WITHOUT LOGIN FLOW
+# -----------------------------------------------------------------------------
+@app.on_callback_query(filters.regex("^rasonly_free$"))
+async def rasonly_free_callback(client: Client, query: CallbackQuery):
+    await query.message.edit_text("⏳ **Fetching available batches... Please wait.**")
+    async with aiohttp.ClientSession() as session:
+        pkg_payload = {"token": "123456789", "dlb_u_id": "5677", "groupId": "1"}
+        pkg_res = await rasonly_post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
 
+        pkgs = []
+        for v in (pkg_res if isinstance(pkg_res, list) else pkg_res.values()):
+            if isinstance(v, list) and v and "dlb_pkg_id" in v[0]:
+                pkgs = v
+                break
+
+        if not pkgs:
+            await query.message.edit_text(
+                "❌ **Failed to retrieve courses.**",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="custom_")]])
+            )
+            return
+
+        buttons_list = []
+        for p in pkgs:
+            pid = str(p.get("dlb_pkg_id"))
+            title = p.get("dlb_pkg_title", f"Course {pid}")
+            price = p.get("dlb_pkg_price") or p.get("pkg_price") or "Free"
+            btn_title = (title[:25] + "..") if len(title) > 25 else title
+            buttons_list.append([InlineKeyboardButton(f"📚 {btn_title} (₹{price})", callback_data=f"rasext_{pid}")])
+
+        buttons_list.append([InlineKeyboardButton("🔙 Back", callback_data="custom_")])
+
+        await query.message.edit_text(
+            "🎯 **Select a Course to Extract Links:**",
+            reply_markup=InlineKeyboardMarkup(buttons_list)
+        )
+        await query.answer()
+
+@app.on_callback_query(filters.regex(r"^rasext_(\d+)$"))
+async def rasonly_extract_batch_callback(client: Client, query: CallbackQuery):
+    target_pid = query.data.split("_")[1]
+    await query.message.edit_text(
+        f"⏳ **Extracting Course ID `{target_pid}`...**\n"
+        f"__Fetching lectures, PDFs, and HLS streams...__"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        pkg_payload = {"token": "123456789", "dlb_u_id": "5677", "groupId": "1"}
+        pkg_res = await rasonly_post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
+        
+        course_title = f"Course_{target_pid}"
+        for v in (pkg_res if isinstance(pkg_res, list) else pkg_res.values()):
+            if isinstance(v, list) and v and "dlb_pkg_id" in v[0]:
+                match_pkg = next((p for p in v if str(p.get("dlb_pkg_id")) == target_pid), None)
+                if match_pkg:
+                    course_title = match_pkg.get("dlb_pkg_title", course_title)
+                break
+
+        # Fetch Subjects
+        sub_payload = {**RASONLY_COMMON, "dlb_pkg_id": target_pid}
+        sub_res = await rasonly_post_api(session, "/app_version_2/course-subject", sub_payload)
+        subjects = sub_res.get("List", [])
+
+        if not subjects:
+            await query.message.edit_text(f"❌ **No subjects found for Course ID `{target_pid}`.**")
+            return
+
+        extracted_lines = [
+            f"Course: {course_title} (ID: {target_pid})",
+            "=" * 70,
+            ""
+        ]
+
+        total_videos = 0
+        total_pdfs = 0
+
+        for sub in subjects:
+            sub_id = str(sub.get("id"))
+            sub_name = sub.get("name", f"Subject_{sub_id}")
+
+            vid_payload = {**RASONLY_COMMON, "dlb_pkg_id": target_pid, "catid": sub_id}
+            vid_res = await rasonly_post_api(session, "/app_version_2/class-videos-list-new", vid_payload)
+            videos_data = vid_res.get("homedata", [])
+
+            if not videos_data:
+                continue
+
+            sub_video_lines = []
+            sub_pdf_lines = []
+
+            for v in videos_data:
+                v_title = v.get("title", "Untitled").strip()
+                hls = v.get("aws_hsl_path") or v.get("hls_url")
+                pdf = rasonly_extract_pdf(v)
+
+                if hls:
+                    sub_video_lines.append(f"{v_title} : {hls}")
+                    total_videos += 1
+
+                if pdf:
+                    sub_pdf_lines.append(f"{v_title} : {pdf}")
+                    total_pdfs += 1
+
+            if sub_video_lines or sub_pdf_lines:
+                extracted_lines.append(f"\n{'=' * 20} {sub_name.upper()} (ID: {sub_id}) {'=' * 20}\n")
+                if sub_video_lines:
+                    extracted_lines.append("--- [VIDEOS] ---")
+                    extracted_lines.extend(sub_video_lines)
+                    extracted_lines.append("")
+                if sub_pdf_lines:
+                    extracted_lines.append("--- [PDF NOTES] ---")
+                    extracted_lines.extend(sub_pdf_lines)
+                    extracted_lines.append("")
+
+        total_links = total_videos + total_pdfs
+        if total_links == 0:
+            await query.message.edit_text(f"⚠️ **No media or notes found for ID `{target_pid}`.**")
+            return
+
+        filename = f"{target_pid}_{rasonly_sanitize_filename(course_title)}.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("\n".join(extracted_lines).strip() + "\n")
+
+        caption = (
+            f"**🎯 ᴇxᴛʀᴀᴄᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ**\n\n"
+            f"> 📚 **Batch Name:** `{course_title}`\n"
+            f"> 🆔 **Course ID:** `{target_pid}`\n"
+            f"> 🎬 **Total Videos:** `{total_videos}`\n"
+            f"> 📄 **Total PDFs:** `{total_pdfs}`\n"
+            f"> 🔗 **Total Links:** `{total_links}`\n"
+            f"> ⚡ **Platform:** `RASonly`\n\n"
+            f"__Extracted by ONeX Extractor Bot__"
+        )
+
+        await query.message.reply_document(
+            document=filename,
+            caption=caption,
+            thumb=thumb_path if os.path.exists(thumb_path) else None
+        )
+        await query.message.delete()
+
+        if os.path.exists(filename):
+            os.remove(filename)
+
+# -----------------------------------------------------------------------------
+# APPX & GENERAL HELPERS
+# -----------------------------------------------------------------------------
+def get_alphabet_keyboard():
+    """Create a keyboard with A-Z buttons in a modern style"""
+    alphabet = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    keyboard = []
+    row = []
+
+    for letter in alphabet:
+        row.append(InlineKeyboardButton(f"{letter}", callback_data=f"alpha_{letter}"))
+        if len(row) == 7:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("𝐁 𝐀 𝐂 𝐊", callback_data="home_")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_apps_by_letter(letter):
+    """Get apps starting with the given letter from appxapis.json"""
+    try:
+        with open('appxapis.json', 'r', encoding='utf-8') as f:
+            apps = json.load(f)
+
+        filtered_apps = [app for app in apps if app['name'].upper().startswith(letter)]
+        filtered_apps.sort(key=lambda x: x['name'])
+        return filtered_apps
+    except Exception as e:
+        print(f"Error reading appxapis.json: {e}")
+        return []
+
+def to_small_caps(text):
+    normal = "abcdefghijklmnopqrstuvwxyz"
+    small_caps = "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ"
+    table = str.maketrans(''.join(normal), ''.join(small_caps))
+    return text.lower().translate(table)
+
+def create_app_keyboard(apps, page=0, letter=None):
+    """Create a keyboard with app buttons, 40 apps per page"""
+    keyboard = []
+    row = []
+
+    items_per_page = 40
+    total_pages = (len(apps) + items_per_page - 1) // items_per_page
+    start_idx = page * items_per_page
+    end_idx = min(start_idx + items_per_page, len(apps))
+    current_apps = apps[start_idx:end_idx]
+
+    for idx, app_item in enumerate(current_apps):
+        name = app_item['name']
+        styled_name = name.replace("api", "").replace("Api", "")
+        styled_name = ' '.join(word.capitalize() for word in styled_name.split())
+
+        button_text = f"👑 {styled_name}"
+        button = InlineKeyboardButton(button_text, callback_data=f"app_{name}")
+        row.append(button)
+
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        if len(row) == 1:
+            row.append(InlineKeyboardButton(" ", callback_data="ignore"))
+        keyboard.append(row)
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("« Prev", callback_data=f"page_{letter}_{page-1}"))
+    nav_row.append(InlineKeyboardButton("« 𝐁𝐚𝐜𝐤 »", callback_data="appxlist"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next »", callback_data=f"page_{letter}_{page+1}"))
+    keyboard.append(nav_row)
+
+    return keyboard, total_pages
+
+async def process_with_timeout(func, client, message, user_id, timeout=60):
+    try:
+        return await asyncio.wait_for(func(client, message, user_id), timeout=timeout)
+    except asyncio.TimeoutError:
+        return "timeout"
+    except Exception as e:
+        print(f"Error in process_with_timeout: {e}")
+        return f"error:{str(e)}"
+
+# -----------------------------------------------------------------------------
+# TOP-LEVEL CALLBACK HANDLERS
+# -----------------------------------------------------------------------------
 @app.on_callback_query(filters.regex("^appxlist$"))
 async def show_alphabet(client, query):
     keyboard = get_alphabet_keyboard()
-    await query.message.edit_text("𝐒𝐞𝐥𝐞𝐜𝐭 𝐀 𝐋𝐞𝐭𝐭𝐞𝐫 𝐓𝐨 𝐕𝐢𝐞𝐰 𝐀𝐩𝐩𝐬 ✨", reply_markup=keyboard)
-
+    await query.message.edit_text("𝐒𝐞𝐥𝐞𝐜𝐭 𝐀 𝐋𝐞𝐭𝐭𝐞𝐫 𝐓𝐨 𝐕𝐢𝐞𝐰 𝐀𝐩ᴘ𝐬 ✨", reply_markup=keyboard)
 
 @app.on_callback_query(filters.regex("^alpha_"))
 async def show_apps_for_letter(client, query):
@@ -312,12 +584,10 @@ async def show_apps_for_letter(client, query):
         print(f"Error showing apps: {e}")
         await query.answer("Error displaying apps. Please try again.", show_alert=True)
 
-
 @app.on_callback_query(filters.regex(r"^sway_free$"))
 async def handle_sway_callback(client: Client, callback: CallbackQuery):
     await callback.answer()
     await cmd_selectionway(client, callback.message)
-
 
 @app.on_callback_query(filters.regex("^page_"))
 async def handle_pagination(client, query):
@@ -339,7 +609,6 @@ async def handle_pagination(client, query):
     except Exception as e:
         print(f"Pagination error: {e}")
         await query.answer("Error in pagination. Please try again.", show_alert=True)
-
 
 @app.on_callback_query(filters.regex("^app_"))
 async def handle_app_selection(client, query):
@@ -368,17 +637,6 @@ async def handle_app_selection(client, query):
             reply_markup=get_alphabet_keyboard()
         )
 
-
-async def process_with_timeout(func, client, message, user_id, timeout=60):
-    try:
-        return await asyncio.wait_for(func(client, message, user_id), timeout=timeout)
-    except asyncio.TimeoutError:
-        return "timeout"
-    except Exception as e:
-        print(f"Error in process_with_timeout: {e}")
-        return f"error:{str(e)}"
-
-
 @app.on_callback_query(filters.regex("^pwwp$"))
 async def pwwp_callback(client, callback_query):
     try:
@@ -396,7 +654,6 @@ async def pwwp_callback(client, callback_query):
     except Exception as e:
         print(f"Error in pwwp_callback: {e}")
         await callback_query.answer("An error occurred", show_alert=True)
-
 
 @app.on_callback_query(filters.regex("^appxwp$"))
 async def appxwp_callback(client, callback_query):
@@ -428,7 +685,6 @@ async def appxwp_callback(client, callback_query):
         print(f"Error in appxwp_callback: {e}")
         await callback_query.answer("An error occurred", show_alert=True)
 
-
 @app.on_callback_query(filters.regex("^cpwp$"))
 async def cpwp_callback(client, callback_query):
     try:
@@ -447,7 +703,6 @@ async def cpwp_callback(client, callback_query):
         print(f"Error in cpwp_callback: {e}")
         await callback_query.answer("An error occurred", show_alert=True)
 
-
 @app.on_callback_query(filters.regex("^cw$"))
 async def career_will_callback(app: Client, callback_query: CallbackQuery):
     try:
@@ -461,7 +716,13 @@ async def career_will_callback(app: Client, callback_query: CallbackQuery):
     except Exception as e:
         await callback_query.message.reply_text(f"Error: {str(e)}")
 
+@app.on_callback_query(filters.regex("^ignore$"))
+async def handle_ignore(client, query):
+    await query.answer()
 
+# -----------------------------------------------------------------------------
+# MAIN CALLBACK DISPATCHER
+# -----------------------------------------------------------------------------
 @app.on_callback_query()
 async def handle_callback(client, query):
     if query.data == "home_":
@@ -491,62 +752,33 @@ async def handle_callback(client, query):
             reply_markup=reply_markup
         )
 
-    elif query.data == "appxlist":
-        keyboard = get_alphabet_keyboard()
-        await query.message.edit_text("𝐒𝐞𝐥𝐞𝐜𝐭 𝐀 𝐋𝐞𝐭𝐭𝐞𝐫 𝐓𝐨 𝐕𝐢𝐞𝐰 𝐀𝐩𝐩𝐬 ✨", reply_markup=keyboard)
+    elif query.data == "next_1":
+        reply_markup = InlineKeyboardMarkup(button2)
+        await query.message.edit_text(
+            script.MANUAL_TXT,
+            reply_markup=reply_markup
+        )
 
-    elif query.data.startswith("alpha_"):
-        letter = query.data.split("_")[1]
-        try:
-            with open('appxapis.json', 'r', encoding='utf-8') as f:
-                apps = json.load(f)
+    elif query.data == "next_2":
+        reply_markup = InlineKeyboardMarkup(button3)
+        await query.message.edit_text(
+            script.MANUAL_TXT,
+            reply_markup=reply_markup
+        )
 
-            filtered_apps = [app for app in apps if app['name'].lower().startswith(letter.lower())]
+    elif query.data == "next_3":
+        reply_markup = InlineKeyboardMarkup(button4)
+        await query.message.edit_text(
+            script.MANUAL_TXT,
+            reply_markup=reply_markup
+        )
 
-            if not filtered_apps:
-                await query.message.edit_text(
-                    f"**No apps found starting with '{letter}'**\n\n"
-                    "Please select another letter.",
-                    reply_markup=get_alphabet_keyboard()
-                )
-                return
-
-            keyboard, total_pages = create_app_keyboard(filtered_apps, 0, letter)
-            await query.message.edit_text(
-                f"**Apps starting with '{letter}'**\n\n"
-                "Select an app to proceed:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        except Exception as e:
-            await query.message.edit_text(
-                f"**Error loading apps: {str(e)}**\n\n"
-                "Please try again later.",
-                reply_markup=get_alphabet_keyboard()
-            )
-
-    elif query.data.startswith("page_"):
-        try:
-            parts = query.data.split("_")
-            letter = parts[1]
-            page = int(parts[2])
-
-            with open('appxapis.json', 'r', encoding='utf-8') as f:
-                apps = json.load(f)
-
-            filtered_apps = [app for app in apps if app['name'].lower().startswith(letter.lower())]
-            keyboard, total_pages = create_app_keyboard(filtered_apps, page, letter)
-
-            await query.message.edit_text(
-                f"**Apps starting with '{letter}'**\n\n"
-                "Select an app to proceed:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        except Exception as e:
-            await query.message.edit_text(
-                f"**Error loading page: {str(e)}**\n\n"
-                "Please try again later.",
-                reply_markup=get_alphabet_keyboard()
-            )
+    elif query.data == "next_4":
+        reply_markup = InlineKeyboardMarkup(button5)
+        await query.message.edit_text(
+            script.MANUAL_TXT,
+            reply_markup=reply_markup
+        )
 
     elif query.data == "perfect_acc":
         api = "perfectionacademyapi.appx.co.in"
@@ -743,129 +975,37 @@ async def handle_callback(client, query):
 
     elif query.data == "pw_":
         await pw_login(app, query.message)
+
     elif query.data == "rgvikramjeet_":
         await rgvikramjeet(app, query.message)
+
     elif query.data == "ugcw_":
         await career_will(app, query.message)
+
     elif query.data == "vision_ias_":
         await scrape_vision_ias(app, query.message)
+
     elif query.data == "my_pathshala_":
         await my_pathshala_login(app, query.message)
+
     elif query.data == "khan_":
         await khan_login(app, query.message)
+
     elif query.data == "kdlive_":
         await kdlive(app, query.message)
+
     elif query.data == "iq_":
         await handle_iq_logic(app, query.message)
+
     elif query.data == "adda_":
         await adda_command_handler(app, query.message)
-    elif query.data == "classplus_":
-        await classplus_txt(app, query.message)
-    elif query.data == "ak_":
-        await ak_start(app, query.message)
+
     elif query.data == "exampur_txt":
         await exampur_txt(app, query.message)
 
-
-def get_alphabet_keyboard():
-    """Create a keyboard with A-Z buttons in a modern style"""
-    alphabet = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    keyboard = []
-    row = []
-
-    for letter in alphabet:
-        row.append(InlineKeyboardButton(f"{letter}", callback_data=f"alpha_{letter}"))
-        if len(row) == 7:
-            keyboard.append(row)
-            row = []
-
-    if row:
-        keyboard.append(row)
-
-    keyboard.append([InlineKeyboardButton("𝐁 𝐀 𝐂 𝐊", callback_data="home_")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_apps_by_letter(letter):
-    """Get apps starting with the given letter from appxapis.json"""
-    try:
-        with open('appxapis.json', 'r', encoding='utf-8') as f:
-            apps = json.load(f)
-
-        filtered_apps = [app for app in apps if app['name'].upper().startswith(letter)]
-        filtered_apps.sort(key=lambda x: x['name'])
-        return filtered_apps
-    except Exception as e:
-        print(f"Error reading appxapis.json: {e}")
-        return []
-
-
-def to_small_caps(text):
-    normal = "abcdefghijklmnopqrstuvwxyz"
-    small_caps = "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ"
-    table = str.maketrans(''.join(normal), ''.join(small_caps))
-    return text.lower().translate(table)
-
-
-def create_app_keyboard(apps, page=0, letter=None):
-    """Create a keyboard with app buttons, 40 apps per page"""
-    keyboard = []
-    row = []
-
-    items_per_page = 40
-    total_pages = (len(apps) + items_per_page - 1) // items_per_page
-    start_idx = page * items_per_page
-    end_idx = min(start_idx + items_per_page, len(apps))
-    current_apps = apps[start_idx:end_idx]
-
-    for idx, app_item in enumerate(current_apps):
-        name = app_item['name']
-        styled_name = name.replace("api", "").replace("Api", "")
-        styled_name = ' '.join(word.capitalize() for word in styled_name.split())
-
-        button_text = f"👑 {styled_name}"
-        button = InlineKeyboardButton(button_text, callback_data=f"app_{name}")
-        row.append(button)
-
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-
-    if row:
-        if len(row) == 1:
-            row.append(InlineKeyboardButton(" ", callback_data="ignore"))
-        keyboard.append(row)
-
-    nav_row = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton("« Prev", callback_data=f"page_{letter}_{page-1}"))
-    nav_row.append(InlineKeyboardButton("« 𝐁𝐚𝐜𝐤 »", callback_data="appxlist"))
-    if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next »", callback_data=f"page_{letter}_{page+1}"))
-    keyboard.append(nav_row)
-
-    return keyboard, total_pages
-
-
-@app.on_callback_query(filters.regex("^ignore$"))
-async def handle_ignore(client, query):
-    await query.answer()
-
-
-@app.on_message(filters.command("txt2html"))
-async def txt2html_command(client, message):
-    await show_txt2html_help(client, message)
-
-
-@app.on_message(filters.private & filters.document)
-async def handle_document(client, message):
-    """Handle document messages"""
-    if message.document.file_name.endswith('.txt'):
-        await handle_txt2html(client, message)
-    elif message.document.file_name.endswith('.html'):
-        await html_to_text_command(client, message)
-
-
+# -----------------------------------------------------------------------------
+# HTML CONVERTER HANDLERS
+# -----------------------------------------------------------------------------
 def deobfuscate_url(encoded_url):
     """Deobfuscate URL back to original form."""
     try:
@@ -874,7 +1014,6 @@ def deobfuscate_url(encoded_url):
         return decoded[8:]
     except Exception:
         return encoded_url
-
 
 async def fetch_url(session, url):
     """Fetch URL from API asynchronously and extract actual URL."""
@@ -892,6 +1031,17 @@ async def fetch_url(session, url):
         pass
     return url
 
+@app.on_message(filters.command("txt2html"))
+async def txt2html_command(client, message):
+    await show_txt2html_help(client, message)
+
+@app.on_message(filters.private & filters.document)
+async def handle_document(client, message):
+    """Handle document messages"""
+    if message.document.file_name.endswith('.txt'):
+        await handle_txt2html(client, message)
+    elif message.document.file_name.endswith('.html'):
+        await html_to_text_command(client, message)
 
 @app.on_message(filters.command("html2txt"))
 async def html_to_text_command(client: Client, message: Message):
@@ -974,44 +1124,40 @@ async def html_to_text_command(client: Client, message: Message):
                         name = div.find('span').text.strip()
                         other_links.append((name, url))
 
-        text_content = "🎥 Videos:\n"
-        for name, url in video_links:
-            url = requests.utils.unquote(url)
-            text_content += f"{name}:{url}\n"
-
-        if pdf_links:
-            text_content += "\n📄 PDFs:\n"
-            for name, url in pdf_links:
+            text_content = "🎥 Videos:\n"
+            for name, url in video_links:
                 url = requests.utils.unquote(url)
                 text_content += f"{name}:{url}\n"
 
-        if other_links:
-            text_content += "\n🔗 Other Links:\n"
-            for name, url in other_links:
-                url = requests.utils.unquote(url)
-                text_content += f"{name}:{url}\n"
+            if pdf_links:
+                text_content += "\n📄 PDFs:\n"
+                for name, url in pdf_links:
+                    url = requests.utils.unquote(url)
+                    text_content += f"{name}:{url}\n"
 
-        text_content += "\n@GodxBots"
+            if other_links:
+                text_content += "\n🔗 Other Links:\n"
+                for name, url in other_links:
+                    url = requests.utils.unquote(url)
+                    text_content += f"{name}:{url}\n"
 
-        txt_path = file_path.rsplit('.', 1)[0] + '.txt'
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(text_content)
+            text_content += "\n@GodxBots"
 
-        await message.reply_document(
-            txt_path,
-            thumb=thumb_path if os.path.exists(thumb_path) else None,
-            caption="<blockquote>✅ HTML converted to text format\n🔓 All URLs have been decoded\n\n🤖 @GodxBots</blockquote>"
-        )
+            txt_path = file_path.rsplit('.', 1)[0] + '.txt'
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(text_content)
 
-        os.remove(file_path)
-        os.remove(txt_path)
-        await progress_msg.delete()
+            await message.reply_document(
+                txt_path,
+                thumb=thumb_path if os.path.exists(thumb_path) else None,
+                caption="<blockquote>✅ HTML converted to text format\n🔓 All URLs have been decoded\n\n🤖 @GodxBots</blockquote>"
+            )
+
+            os.remove(file_path)
+            os.remove(txt_path)
+            await progress_msg.delete()
 
     except Exception as e:
         await message.reply_text(f"❌ Error: {str(e)}")
-
-
-
-    
 
     
