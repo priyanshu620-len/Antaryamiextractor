@@ -2,10 +2,12 @@ import os
 import re
 import aiohttp
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+
+from Extractor import app
 
 # -----------------------------------------------------------------------------
-# Configuration & Headers
+# Configuration & Constants
 # -----------------------------------------------------------------------------
 BASE_URL = "https://course.rasonly.com"
 HEADERS = {
@@ -19,7 +21,7 @@ THUMB_PATH = "Extractor/thumbs/txt-5.jpg"
 
 
 def sanitize_filename(name: str) -> str:
-    """Removes invalid filesystem characters for saving files."""
+    """Removes invalid filesystem characters."""
     return re.sub(r'[\\/*?:"<>|]', "", name).strip().replace(" ", "_")
 
 
@@ -44,21 +46,18 @@ async def post_api(session: aiohttp.ClientSession, path: str, payload: dict) -> 
 
 
 # -----------------------------------------------------------------------------
-# Extraction Command Handler
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# RASONLY WITHOUT LOGIN EXTRACTION FLOW (FIXED)
+# Extraction Callback & Handler
 # -----------------------------------------------------------------------------
 @app.on_callback_query(filters.regex("^rasonly_free$"))
 async def rasonly_free_callback(client: Client, query: CallbackQuery):
     await query.answer()
-    
-    # Send a new status message instead of editing the photo caption
+
     status_msg = await query.message.reply_text("⏳ **Fetching available courses list... Please wait.**")
-    
+
     async with aiohttp.ClientSession() as session:
+        # 1. Fetch available packages
         pkg_payload = {"token": "123456789", "dlb_u_id": "5677", "groupId": "1"}
-        pkg_res = await rasonly_post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
+        pkg_res = await post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
 
         pkgs = []
         for v in (pkg_res if isinstance(pkg_res, list) else pkg_res.values()):
@@ -73,6 +72,7 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
             )
             return
 
+        # 2. Build text-based courses list
         menu_text = "📚 **AVAILABLE RASONLY COURSES**\n"
         menu_text += "═══════════════════════════════════════\n\n"
 
@@ -81,7 +81,7 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
             pid = str(p.get("dlb_pkg_id"))
             title = p.get("dlb_pkg_title", f"Course_{pid}").strip()
             thumb = p.get("dlb_pkg_thumbnail") or p.get("image") or p.get("thumbnail") or ""
-            
+
             price = p.get("dlb_pkg_price") or p.get("pkg_price") or "0"
             notes_price = p.get("dlb_notes_price", "")
             test_price = p.get("dlb_test_price", "")
@@ -105,13 +105,12 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
         menu_text += "═══════════════════════════════════════\n"
         menu_text += "👉 **Reply with the Course Number or Course ID to extract:**"
 
-        # Standard text messages allow up to 4096 characters
         if len(menu_text) > 4000:
             menu_text = menu_text[:4000] + "\n\n...[list truncated]"
 
-        # Edit the newly created text message (not the photo message)
         await status_msg.edit_text(menu_text)
 
+        # 3. Wait for user input
         try:
             user_response: Message = await client.listen(chat_id=query.message.chat.id, timeout=120)
         except Exception:
@@ -129,8 +128,9 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
             f"__Fetching subject modules and organizing links...__"
         )
 
-        sub_payload = {**RASONLY_COMMON, "dlb_pkg_id": target_pid}
-        sub_res = await rasonly_post_api(session, "/app_version_2/course-subject", sub_payload)
+        # 4. Fetch Subjects
+        sub_payload = {**COMMON_PAYLOAD, "dlb_pkg_id": target_pid}
+        sub_res = await post_api(session, "/app_version_2/course-subject", sub_payload)
         subjects = sub_res.get("List", [])
 
         if not subjects:
@@ -138,21 +138,21 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
             return
 
         file_lines = []
-        
-        # 1. Course Thumbnail (if available)
+
+        # 5. Course Thumbnail
         if course_thumb and str(course_thumb).startswith("http"):
             file_lines.append(f"(Course Thumbnail) Course Thumbnail : {course_thumb.strip()}")
 
         total_videos = 0
         total_pdfs = 0
 
-        # 2. Iterate Subjects and Classes
+        # 6. Fetch Lectures & PDFs Topic-wise
         for sub in subjects:
             sub_id = str(sub.get("id"))
             sub_name = sub.get("name", f"Subject_{sub_id}").strip()
 
-            vid_payload = {**RASONLY_COMMON, "dlb_pkg_id": target_pid, "catid": sub_id}
-            vid_res = await rasonly_post_api(session, "/app_version_2/class-videos-list-new", vid_payload)
+            vid_payload = {**COMMON_PAYLOAD, "dlb_pkg_id": target_pid, "catid": sub_id}
+            vid_res = await post_api(session, "/app_version_2/class-videos-list-new", vid_payload)
             videos_data = vid_res.get("homedata", [])
 
             if not videos_data:
@@ -161,14 +161,14 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
             for v in videos_data:
                 v_title = v.get("title", "Untitled").strip()
                 hls = v.get("aws_hsl_path") or v.get("hls_url") or v.get("url")
-                pdf = rasonly_extract_pdf(v)
+                pdf = extract_pdf(v)
 
-                # Video link format: (Topic) Title : URL
+                # Format: (Topic) Title : URL
                 if hls:
                     file_lines.append(f"({sub_name}) {v_title} : {hls.strip()}")
                     total_videos += 1
 
-                # PDF link format: (Topic) Title [PDF] : URL
+                # Format: (Topic) Title [PDF] : URL
                 if pdf:
                     file_lines.append(f"({sub_name}) {v_title} [PDF] : {pdf.strip()}")
                     total_pdfs += 1
@@ -178,7 +178,8 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
             await progress_msg.edit_text(f"⚠️ **No media or document links found for ID `{target_pid}`.**")
             return
 
-        filename = f"{target_pid}_{rasonly_sanitize_filename(course_title)}.txt"
+        # 7. Write to file & Upload
+        filename = f"{target_pid}_{sanitize_filename(course_title)}.txt"
         with open(filename, "w", encoding="utf-8") as f:
             f.write("\n".join(file_lines).strip() + "\n")
 
@@ -201,7 +202,7 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
         await query.message.reply_document(
             document=filename,
             caption=caption,
-            thumb=thumb_path if os.path.exists(thumb_path) else None
+            thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None
         )
         await progress_msg.delete()
 
