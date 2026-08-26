@@ -324,11 +324,12 @@ async def start(_, message):
         )
 
 # -----------------------------------------------------------------------------
-# RASONLY WITHOUT LOGIN EXTRACTION FLOW
+# RASONLY WITHOUT LOGIN FLOW (LIST FORMAT WITHOUT BUTTONS)
 # -----------------------------------------------------------------------------
 @app.on_callback_query(filters.regex("^rasonly_free$"))
 async def rasonly_free_callback(client: Client, query: CallbackQuery):
-    await query.message.edit_text("⏳ **Fetching available batches... Please wait.**")
+    await query.message.edit_text("⏳ **Fetching available courses list... Please wait.**")
+    
     async with aiohttp.ClientSession() as session:
         pkg_payload = {"token": "123456789", "dlb_u_id": "5677", "groupId": "1"}
         pkg_res = await rasonly_post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
@@ -341,59 +342,77 @@ async def rasonly_free_callback(client: Client, query: CallbackQuery):
 
         if not pkgs:
             await query.message.edit_text(
-                "❌ **Failed to retrieve courses.**",
+                "❌ **Failed to retrieve courses from server.**",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="custom_")]])
             )
             return
 
-        buttons_list = []
-        for p in pkgs:
+        menu_text = "📚 **AVAILABLE RASONLY COURSES**\n"
+        menu_text += "═══════════════════════════════════════\n\n"
+
+        valid_map = {}
+        for idx, p in enumerate(pkgs, 1):
             pid = str(p.get("dlb_pkg_id"))
-            title = p.get("dlb_pkg_title", f"Course {pid}")
-            price = p.get("dlb_pkg_price") or p.get("pkg_price") or "Free"
-            btn_title = (title[:25] + "..") if len(title) > 25 else title
-            buttons_list.append([InlineKeyboardButton(f"📚 {btn_title} (₹{price})", callback_data=f"rasext_{pid}")])
+            title = p.get("dlb_pkg_title", f"Course_{pid}").strip()
+            
+            price = p.get("dlb_pkg_price") or p.get("pkg_price") or "0"
+            notes_price = p.get("dlb_notes_price", "")
+            test_price = p.get("dlb_test_price", "")
 
-        buttons_list.append([InlineKeyboardButton("🔙 Back", callback_data="custom_")])
+            if price in ("0", ""):
+                if notes_price and notes_price != "0":
+                    display_price = f"₹{notes_price} (eNotes)"
+                elif test_price and test_price != "0":
+                    display_price = f"₹{test_price} (Test Series)"
+                else:
+                    display_price = "FREE"
+            else:
+                display_price = f"₹{price}"
 
-        await query.message.edit_text(
-            "🎯 **Select a Course to Extract Links:**",
-            reply_markup=InlineKeyboardMarkup(buttons_list)
+            valid_map[str(idx)] = (pid, title)
+            valid_map[pid] = (pid, title)
+
+            menu_text += f"`{idx:02d}.` **{title}**\n"
+            menu_text += f"     └ **ID:** `{pid}` | **Price:** `{display_price}`\n\n"
+
+        menu_text += "═══════════════════════════════════════\n"
+        menu_text += "👉 **Reply with the Course Number or Course ID to extract:**"
+
+        if len(menu_text) > 4000:
+            menu_text = menu_text[:4000] + "\n\n...[list truncated]"
+
+        await query.message.edit_text(menu_text)
+
+        try:
+            user_response: Message = await client.listen(chat_id=query.message.chat.id, timeout=120)
+        except Exception:
+            await query.message.reply_text("⏰ **Session timed out. Please select RASonly again from the menu.**")
+            return
+
+        choice = user_response.text.strip()
+        if choice not in valid_map:
+            await query.message.reply_text(f"❌ **Invalid selection `{choice}`. Please start again.**")
+            return
+
+        target_pid, course_title = valid_map[choice]
+        progress_msg = await query.message.reply_text(
+            f"⏳ **Extracting:** `{course_title}` (ID: `{target_pid}`)\n"
+            f"__Fetching subject modules and organizing topics...__"
         )
-        await query.answer()
 
-@app.on_callback_query(filters.regex(r"^rasext_(\d+)$"))
-async def rasonly_extract_batch_callback(client: Client, query: CallbackQuery):
-    target_pid = query.data.split("_")[1]
-    await query.message.edit_text(
-        f"⏳ **Extracting Course ID `{target_pid}`...**\n"
-        f"__Fetching lectures, PDFs, and HLS streams...__"
-    )
-
-    async with aiohttp.ClientSession() as session:
-        pkg_payload = {"token": "123456789", "dlb_u_id": "5677", "groupId": "1"}
-        pkg_res = await rasonly_post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
-        
-        course_title = f"Course_{target_pid}"
-        for v in (pkg_res if isinstance(pkg_res, list) else pkg_res.values()):
-            if isinstance(v, list) and v and "dlb_pkg_id" in v[0]:
-                match_pkg = next((p for p in v if str(p.get("dlb_pkg_id")) == target_pid), None)
-                if match_pkg:
-                    course_title = match_pkg.get("dlb_pkg_title", course_title)
-                break
-
-        # Fetch Subjects
         sub_payload = {**RASONLY_COMMON, "dlb_pkg_id": target_pid}
         sub_res = await rasonly_post_api(session, "/app_version_2/course-subject", sub_payload)
         subjects = sub_res.get("List", [])
 
         if not subjects:
-            await query.message.edit_text(f"❌ **No subjects found for Course ID `{target_pid}`.**")
+            await progress_msg.edit_text(f"❌ **No subjects found under Course ID `{target_pid}`.**")
             return
 
-        extracted_lines = [
-            f"Course: {course_title} (ID: {target_pid})",
-            "=" * 70,
+        file_lines = [
+            "=" * 75,
+            f"COURSE: {course_title}",
+            f"COURSE ID: {target_pid}",
+            "=" * 75,
             ""
         ]
 
@@ -402,7 +421,7 @@ async def rasonly_extract_batch_callback(client: Client, query: CallbackQuery):
 
         for sub in subjects:
             sub_id = str(sub.get("id"))
-            sub_name = sub.get("name", f"Subject_{sub_id}")
+            sub_name = sub.get("name", f"Subject_{sub_id}").strip()
 
             vid_payload = {**RASONLY_COMMON, "dlb_pkg_id": target_pid, "catid": sub_id}
             vid_res = await rasonly_post_api(session, "/app_version_2/class-videos-list-new", vid_payload)
@@ -428,24 +447,29 @@ async def rasonly_extract_batch_callback(client: Client, query: CallbackQuery):
                     total_pdfs += 1
 
             if sub_video_lines or sub_pdf_lines:
-                extracted_lines.append(f"\n{'=' * 20} {sub_name.upper()} (ID: {sub_id}) {'=' * 20}\n")
+                file_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                file_lines.append(f"📁 TOPIC / SUBJECT: {sub_name.upper()} (ID: {sub_id})")
+                file_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                file_lines.append("")
+
                 if sub_video_lines:
-                    extracted_lines.append("--- [VIDEOS] ---")
-                    extracted_lines.extend(sub_video_lines)
-                    extracted_lines.append("")
+                    file_lines.append("[ VIDEOS / LECTURES ]")
+                    file_lines.extend(sub_video_lines)
+                    file_lines.append("")
+
                 if sub_pdf_lines:
-                    extracted_lines.append("--- [PDF NOTES] ---")
-                    extracted_lines.extend(sub_pdf_lines)
-                    extracted_lines.append("")
+                    file_lines.append("[ STUDY MATERIAL / PDF NOTES ]")
+                    file_lines.extend(sub_pdf_lines)
+                    file_lines.append("")
 
         total_links = total_videos + total_pdfs
         if total_links == 0:
-            await query.message.edit_text(f"⚠️ **No media or notes found for ID `{target_pid}`.**")
+            await progress_msg.edit_text(f"⚠️ **No media or document links found for ID `{target_pid}`.**")
             return
 
         filename = f"{target_pid}_{rasonly_sanitize_filename(course_title)}.txt"
         with open(filename, "w", encoding="utf-8") as f:
-            f.write("\n".join(extracted_lines).strip() + "\n")
+            f.write("\n".join(file_lines).strip() + "\n")
 
         caption = (
             f"**🎯 ᴇxᴛʀᴀᴄᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ**\n\n"
@@ -463,7 +487,7 @@ async def rasonly_extract_batch_callback(client: Client, query: CallbackQuery):
             caption=caption,
             thumb=thumb_path if os.path.exists(thumb_path) else None
         )
-        await query.message.delete()
+        await progress_msg.delete()
 
         if os.path.exists(filename):
             os.remove(filename)
@@ -574,8 +598,8 @@ async def show_apps_for_letter(client, query):
         return
 
     keyboard, total_pages = create_app_keyboard(apps, page=0, letter=letter)
-    text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫ᴛ𝐢𝐧Gs 𝐖𝐢𝐭𝐡 '{letter}' ({len(apps)} apps)\n"
-    text += f"𝐏𝐚𝐠𝐞: 1/{total_pages}\n"
+    text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫𝐭ɪɴɢ 𝐖ɪ𝐭ʜ '{letter}' ({len(apps)} apps)\n"
+    text += f"𝐏𝐚ɢ𝐞: 1/{total_pages}\n"
     text += "═══════════════════"
 
     try:
@@ -601,8 +625,8 @@ async def handle_pagination(client, query):
             return
 
         keyboard, total_pages = create_app_keyboard(apps, page, letter)
-        text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫ᴛ𝐢𝐧𝐠 𝐖𝐢𝐭𝐡 '{letter}' ({len(apps)} apps)\n"
-        text += f"𝐏𝐚𝐠𝐞: {page + 1}/{total_pages}\n"
+        text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫𝐭ɪɴɢ 𝐖ɪ𝐭ʜ '{letter}' ({len(apps)} apps)\n"
+        text += f"𝐏𝐚ɢ𝐞: {page + 1}/{total_pages}\n"
         text += "═══════════════════"
 
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1113,6 +1137,7 @@ async def html_to_text_command(client: Client, message: Message):
             if other_links:
                 text_content += "\n🔗 Other Links:\n"
                 for name, url in other_links:
+                    url = requests.utils.unquote(url)
                     text_content += f"{name}:{url}\n"
 
             text_content += "\n@GodxBots"
