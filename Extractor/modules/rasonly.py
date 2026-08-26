@@ -5,7 +5,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # -----------------------------------------------------------------------------
-# Base Configuration & Headers
+# Configuration & Headers
 # -----------------------------------------------------------------------------
 BASE_URL = "https://course.rasonly.com"
 HEADERS = {
@@ -15,17 +15,16 @@ HEADERS = {
     "User-Agent": "okhttp/5.1.0",
 }
 COMMON_PAYLOAD = {"token": "123456789", "user_id": "5679", "dlb_grp_id": "1"}
-
-thumb_path = "Extractor/thumbs/txt-5.jpg"
+THUMB_PATH = "Extractor/thumbs/txt-5.jpg"
 
 
 def sanitize_filename(name: str) -> str:
-    """Removes illegal filesystem characters."""
+    """Removes invalid filesystem characters for saving files."""
     return re.sub(r'[\\/*?:"<>|]', "", name).strip().replace(" ", "_")
 
 
 def extract_pdf(item: dict) -> str | None:
-    """Finds PDF attachment URLs inside payload objects."""
+    """Finds PDF attachment URLs inside payload dictionaries."""
     item_str = str(item)
     match = re.search(r'https?://[^\s\'"<>]+?\.pdf[^\s\'"<>]*', item_str, re.IGNORECASE)
     if match:
@@ -45,14 +44,14 @@ async def post_api(session: aiohttp.ClientSession, path: str, payload: dict) -> 
 
 
 # -----------------------------------------------------------------------------
-# Command & Interactive Handler
+# Extraction Command Handler
 # -----------------------------------------------------------------------------
 @Client.on_message(filters.command(["rasonly"]) & ~filters.forwarded)
 async def rasonly_handler(client: Client, message: Message):
-    status_msg = await message.reply_text("🔎 **Fetching available courses list... Please wait.**")
+    status_msg = await message.reply_text("⏳ **Fetching available courses list... Please wait.**")
 
     async with aiohttp.ClientSession() as session:
-        # 1. Fetch available packages from API
+        # 1. Fetch available packages
         pkg_payload = {"token": "123456789", "dlb_u_id": "5677", "groupId": "1"}
         pkg_res = await post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
 
@@ -66,7 +65,7 @@ async def rasonly_handler(client: Client, message: Message):
             await status_msg.edit_text("❌ **Failed to retrieve courses from server.**")
             return
 
-        # 2. Build the text-based course menu list
+        # 2. Build text-based courses list
         menu_text = "📚 **AVAILABLE RASONLY COURSES**\n"
         menu_text += "═══════════════════════════════════════\n\n"
 
@@ -74,10 +73,9 @@ async def rasonly_handler(client: Client, message: Message):
         for idx, p in enumerate(pkgs, 1):
             pid = str(p.get("dlb_pkg_id"))
             title = p.get("dlb_pkg_title", f"Course_{pid}").strip()
-            
-            # Pricing evaluation
+            thumb = p.get("dlb_pkg_thumbnail") or p.get("image") or p.get("thumbnail") or ""
+
             price = p.get("dlb_pkg_price") or p.get("pkg_price") or "0"
-            mrp = p.get("MRP", "0")
             notes_price = p.get("dlb_notes_price", "")
             test_price = p.get("dlb_test_price", "")
 
@@ -91,8 +89,8 @@ async def rasonly_handler(client: Client, message: Message):
             else:
                 display_price = f"₹{price}"
 
-            valid_map[str(idx)] = (pid, title)
-            valid_map[pid] = (pid, title)
+            valid_map[str(idx)] = (pid, title, thumb)
+            valid_map[pid] = (pid, title, thumb)
 
             menu_text += f"`{idx:02d}.` **{title}**\n"
             menu_text += f"     └ **ID:** `{pid}` | **Price:** `{display_price}`\n\n"
@@ -105,7 +103,7 @@ async def rasonly_handler(client: Client, message: Message):
 
         await status_msg.edit_text(menu_text)
 
-        # 3. Wait for user input
+        # 3. Wait for user selection
         try:
             user_response: Message = await client.listen(chat_id=message.chat.id, timeout=120)
         except Exception:
@@ -117,10 +115,10 @@ async def rasonly_handler(client: Client, message: Message):
             await message.reply_text(f"❌ **Invalid selection `{choice}`. Please run `/rasonly` again.**")
             return
 
-        target_pid, course_title = valid_map[choice]
+        target_pid, course_title, course_thumb = valid_map[choice]
         progress_msg = await message.reply_text(
             f"⏳ **Extracting:** `{course_title}` (ID: `{target_pid}`)\n"
-            f"__Fetching subject modules and organizing topics...__"
+            f"__Fetching topics, lectures, and documents...__"
         )
 
         # 4. Fetch Subjects
@@ -132,17 +130,16 @@ async def rasonly_handler(client: Client, message: Message):
             await progress_msg.edit_text(f"❌ **No subjects found under Course ID `{target_pid}`.**")
             return
 
-        # 5. Build structured Topic/Subject-wise .txt content
         file_lines = []
-        file_lines.append("=" * 75)
-        file_lines.append(f"COURSE: {course_title}")
-        file_lines.append(f"COURSE ID: {target_pid}")
-        file_lines.append("=" * 75)
-        file_lines.append("")
+
+        # 5. Course Thumbnail
+        if course_thumb and str(course_thumb).startswith("http"):
+            file_lines.append(f"(Course Thumbnail) Course Thumbnail : {course_thumb.strip()}")
 
         total_videos = 0
         total_pdfs = 0
 
+        # 6. Fetch Lectures & PDFs Topic-wise
         for sub in subjects:
             sub_id = str(sub.get("id"))
             sub_name = sub.get("name", f"Subject_{sub_id}").strip()
@@ -154,45 +151,27 @@ async def rasonly_handler(client: Client, message: Message):
             if not videos_data:
                 continue
 
-            sub_video_lines = []
-            sub_pdf_lines = []
-
             for v in videos_data:
                 v_title = v.get("title", "Untitled").strip()
-                hls = v.get("aws_hsl_path") or v.get("hls_url")
+                hls = v.get("aws_hsl_path") or v.get("hls_url") or v.get("url")
                 pdf = extract_pdf(v)
 
+                # Format: (Topic) Title : URL
                 if hls:
-                    sub_video_lines.append(f"{v_title} : {hls}")
+                    file_lines.append(f"({sub_name}) {v_title} : {hls.strip()}")
                     total_videos += 1
 
+                # Format: (Topic) Title [PDF] : URL
                 if pdf:
-                    sub_pdf_lines.append(f"{v_title} : {pdf}")
+                    file_lines.append(f"({sub_name}) {v_title} [PDF] : {pdf.strip()}")
                     total_pdfs += 1
-
-            # Only append the topic block if links exist
-            if sub_video_lines or sub_pdf_lines:
-                file_lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                file_lines.append(f"📁 TOPIC / SUBJECT: {sub_name.upper()} (ID: {sub_id})")
-                file_lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                file_lines.append("")
-
-                if sub_video_lines:
-                    file_lines.append("[ VIDEOS / LECTURES ]")
-                    file_lines.extend(sub_video_lines)
-                    file_lines.append("")
-
-                if sub_pdf_lines:
-                    file_lines.append("[ STUDY MATERIAL / PDF NOTES ]")
-                    file_lines.extend(sub_pdf_lines)
-                    file_lines.append("")
 
         total_links = total_videos + total_pdfs
         if total_links == 0:
             await progress_msg.edit_text(f"⚠️ **No media or document links found for ID `{target_pid}`.**")
             return
 
-        # 6. Save and Upload Document
+        # 7. Write to file & Upload
         filename = f"{target_pid}_{sanitize_filename(course_title)}.txt"
         with open(filename, "w", encoding="utf-8") as f:
             f.write("\n".join(file_lines).strip() + "\n")
@@ -211,10 +190,9 @@ async def rasonly_handler(client: Client, message: Message):
         await message.reply_document(
             document=filename,
             caption=caption,
-            thumb=thumb_path if os.path.exists(thumb_path) else None
+            thumb=THUMB_PATH if os.path.exists(THUMB_PATH) else None
         )
         await progress_msg.delete()
 
-        # Clean up disk
         if os.path.exists(filename):
             os.remove(filename)
