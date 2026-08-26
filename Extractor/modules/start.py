@@ -39,7 +39,7 @@ from Extractor.modules.kdlive import kdlive
 from Extractor.modules.iq import handle_iq_logic
 from Extractor.modules.getappxotp import send_otpp
 from Extractor.modules.findapi import findapis_extract
-from Extractor.modules.rg_vikramjeet import rgvikramjeet, rgvikram_txt
+from Extractor.modules.rg_vikramjeet import rgvikramjeet
 from Extractor.modules.adda import adda_command_handler
 from Extractor.modules.vision import scrape_vision_ias
 from Extractor.modules.enc import *
@@ -574,7 +574,7 @@ async def show_apps_for_letter(client, query):
         return
 
     keyboard, total_pages = create_app_keyboard(apps, page=0, letter=letter)
-    text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫𝐭𝐢𝐧𝐠 𝐖𝐢𝐭𝐡 '{letter}' ({len(apps)} apps)\n"
+    text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫ᴛ𝐢𝐧Gs 𝐖𝐢𝐭𝐡 '{letter}' ({len(apps)} apps)\n"
     text += f"𝐏𝐚𝐠𝐞: 1/{total_pages}\n"
     text += "═══════════════════"
 
@@ -601,7 +601,7 @@ async def handle_pagination(client, query):
             return
 
         keyboard, total_pages = create_app_keyboard(apps, page, letter)
-        text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫𝐭𝐢𝐧𝐠 𝐖𝐢𝐭𝐡 '{letter}' ({len(apps)} apps)\n"
+        text = f"📱 𝐀𝐩𝐩𝐬 𝐒𝐭𝐚𝐫ᴛ𝐢𝐧𝐠 𝐖𝐢𝐭𝐡 '{letter}' ({len(apps)} apps)\n"
         text += f"𝐏𝐚𝐠𝐞: {page + 1}/{total_pages}\n"
         text += "═══════════════════"
 
@@ -831,9 +831,7 @@ async def handle_callback(client, query):
         await appex_v5_txt(app, query.message, api, name)
 
     elif query.data == "rg_vikramjeet":
-        api = "rgvikramjeetapi.classx.co.in"
-        name = "RG Vikramjeet"
-        await rgvikram_txt(app, query.message, api, name)
+        await rgvikramjeet(app, query.message)
 
     elif query.data == "vidya_bihar":
         api = "vidyabiharapi.teachx.in"
@@ -958,12 +956,6 @@ async def handle_callback(client, query):
 
     elif query.data == "utkarsh_":
         await handle_utk_logic(app, query.message)
-
-    elif query.data == "rgvikramjeet_":
-        await rgvikramjeet(app, query.message)
-
-    elif query.data == "ugcw_":
-        await career_will(app, query.message)
 
     elif query.data == "vision_ias_":
         await scrape_vision_ias(app, query.message)
@@ -1121,7 +1113,6 @@ async def html_to_text_command(client: Client, message: Message):
             if other_links:
                 text_content += "\n🔗 Other Links:\n"
                 for name, url in other_links:
-                    url = requests.utils.unquote(url)
                     text_content += f"{name}:{url}\n"
 
             text_content += "\n@GodxBots"
