@@ -4,7 +4,9 @@ import aiohttp
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# Base Configuration
+# -----------------------------------------------------------------------------
+# Base Configuration & Headers
+# -----------------------------------------------------------------------------
 BASE_URL = "https://course.rasonly.com"
 HEADERS = {
     "os": "android",
@@ -14,9 +16,13 @@ HEADERS = {
 }
 COMMON_PAYLOAD = {"token": "123456789", "user_id": "5679", "dlb_grp_id": "1"}
 
+thumb_path = "Extractor/thumbs/txt-5.jpg"
+
+
 def sanitize_filename(name: str) -> str:
     """Removes illegal filesystem characters."""
     return re.sub(r'[\\/*?:"<>|]', "", name).strip().replace(" ", "_")
+
 
 def extract_pdf(item: dict) -> str | None:
     """Finds PDF attachment URLs inside payload objects."""
@@ -25,6 +31,7 @@ def extract_pdf(item: dict) -> str | None:
     if match:
         return match.group(0).strip().rstrip('.,;)')
     return None
+
 
 async def post_api(session: aiohttp.ClientSession, path: str, payload: dict) -> dict:
     """Asynchronous HTTP POST request handler."""
@@ -36,13 +43,16 @@ async def post_api(session: aiohttp.ClientSession, path: str, payload: dict) -> 
         pass
     return {}
 
+
+# -----------------------------------------------------------------------------
+# Command & Interactive Handler
+# -----------------------------------------------------------------------------
 @Client.on_message(filters.command(["rasonly"]) & ~filters.forwarded)
 async def rasonly_handler(client: Client, message: Message):
-    args = message.text.split(maxsplit=1)
-    status_msg = await message.reply_text("🔎 **Fetching batch data...**")
+    status_msg = await message.reply_text("🔎 **Fetching available courses list... Please wait.**")
 
     async with aiohttp.ClientSession() as session:
-        # 1. Fetch available packages
+        # 1. Fetch available packages from API
         pkg_payload = {"token": "123456789", "dlb_u_id": "5677", "groupId": "1"}
         pkg_res = await post_api(session, "/app_version_2/exam/package-series-new", pkg_payload)
 
@@ -53,54 +63,89 @@ async def rasonly_handler(client: Client, message: Message):
                 break
 
         if not pkgs:
-            await status_msg.edit_text("❌ **Failed to retrieve courses from API.**")
+            await status_msg.edit_text("❌ **Failed to retrieve courses from server.**")
             return
 
-        # Menu Display: If no batch ID is passed
-        if len(args) == 1:
-            menu = "📚 **RASonly Available Batches:**\n\n"
-            for p in pkgs:
-                pid = str(p.get("dlb_pkg_id"))
-                title = p.get("dlb_pkg_title", "Course")
-                price = p.get("dlb_pkg_price") or p.get("pkg_price") or "Free"
-                menu += f"• `{pid}` — **{title}** (₹{price})\n"
+        # 2. Build the text-based course menu list
+        menu_text = "📚 **AVAILABLE RASONLY COURSES**\n"
+        menu_text += "═══════════════════════════════════════\n\n"
 
-            menu += "\n👉 **Send `/rasonly <Course_ID>` to extract.**"
+        valid_map = {}
+        for idx, p in enumerate(pkgs, 1):
+            pid = str(p.get("dlb_pkg_id"))
+            title = p.get("dlb_pkg_title", f"Course_{pid}").strip()
+            
+            # Pricing evaluation
+            price = p.get("dlb_pkg_price") or p.get("pkg_price") or "0"
+            mrp = p.get("MRP", "0")
+            notes_price = p.get("dlb_notes_price", "")
+            test_price = p.get("dlb_test_price", "")
 
-            if len(menu) > 4000:
-                menu = menu[:4000] + "\n\n...[list truncated]"
-            await status_msg.edit_text(menu)
+            if price in ("0", ""):
+                if notes_price and notes_price != "0":
+                    display_price = f"₹{notes_price} (eNotes)"
+                elif test_price and test_price != "0":
+                    display_price = f"₹{test_price} (Test Series)"
+                else:
+                    display_price = "FREE"
+            else:
+                display_price = f"₹{price}"
+
+            valid_map[str(idx)] = (pid, title)
+            valid_map[pid] = (pid, title)
+
+            menu_text += f"`{idx:02d}.` **{title}**\n"
+            menu_text += f"     └ **ID:** `{pid}` | **Price:** `{display_price}`\n\n"
+
+        menu_text += "═══════════════════════════════════════\n"
+        menu_text += "👉 **Reply with the Course Number or Course ID to extract:**"
+
+        if len(menu_text) > 4000:
+            menu_text = menu_text[:4000] + "\n\n...[list truncated]"
+
+        await status_msg.edit_text(menu_text)
+
+        # 3. Wait for user input
+        try:
+            user_response: Message = await client.listen(chat_id=message.chat.id, timeout=120)
+        except Exception:
+            await message.reply_text("⏰ **Session timed out. Please run `/rasonly` again.**")
             return
 
-        # Extraction Flow: ID provided
-        target_pid = args[1].strip()
-        selected_pkg = next((p for p in pkgs if str(p.get("dlb_pkg_id")) == target_pid), None)
-        course_title = selected_pkg.get("dlb_pkg_title", f"Course_{target_pid}") if selected_pkg else f"Course_{target_pid}"
+        choice = user_response.text.strip()
+        if choice not in valid_map:
+            await message.reply_text(f"❌ **Invalid selection `{choice}`. Please run `/rasonly` again.**")
+            return
 
-        await status_msg.edit_text(f"⏳ **Extracting:** `{course_title}`\n_Processing subjects & lectures..._")
+        target_pid, course_title = valid_map[choice]
+        progress_msg = await message.reply_text(
+            f"⏳ **Extracting:** `{course_title}` (ID: `{target_pid}`)\n"
+            f"__Fetching subject modules and organizing topics...__"
+        )
 
-        # 2. Fetch Subjects
+        # 4. Fetch Subjects
         sub_payload = {**COMMON_PAYLOAD, "dlb_pkg_id": target_pid}
         sub_res = await post_api(session, "/app_version_2/course-subject", sub_payload)
         subjects = sub_res.get("List", [])
 
         if not subjects:
-            await status_msg.edit_text(f"❌ **No subjects found for Course ID `{target_pid}`.**")
+            await progress_msg.edit_text(f"❌ **No subjects found under Course ID `{target_pid}`.**")
             return
 
-        extracted_lines = [
-            f"Course: {course_title} (ID: {target_pid})",
-            "=" * 70,
-            ""
-        ]
-        
+        # 5. Build structured Topic/Subject-wise .txt content
+        file_lines = []
+        file_lines.append("=" * 75)
+        file_lines.append(f"COURSE: {course_title}")
+        file_lines.append(f"COURSE ID: {target_pid}")
+        file_lines.append("=" * 75)
+        file_lines.append("")
+
         total_videos = 0
         total_pdfs = 0
 
-        # 3. Fetch Classes & Separate Videos from PDFs
         for sub in subjects:
             sub_id = str(sub.get("id"))
-            sub_name = sub.get("name", f"Subject_{sub_id}")
+            sub_name = sub.get("name", f"Subject_{sub_id}").strip()
 
             vid_payload = {**COMMON_PAYLOAD, "dlb_pkg_id": target_pid, "catid": sub_id}
             vid_res = await post_api(session, "/app_version_2/class-videos-list-new", vid_payload)
@@ -125,30 +170,32 @@ async def rasonly_handler(client: Client, message: Message):
                     sub_pdf_lines.append(f"{v_title} : {pdf}")
                     total_pdfs += 1
 
+            # Only append the topic block if links exist
             if sub_video_lines or sub_pdf_lines:
-                extracted_lines.append(f"\n{'=' * 20} {sub_name.upper()} (ID: {sub_id}) {'=' * 20}\n")
-                
-                # Videos Section
+                file_lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                file_lines.append(f"📁 TOPIC / SUBJECT: {sub_name.upper()} (ID: {sub_id})")
+                file_lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                file_lines.append("")
+
                 if sub_video_lines:
-                    extracted_lines.append("--- [VIDEOS] ---")
-                    extracted_lines.extend(sub_video_lines)
-                    extracted_lines.append("")
-                
-                # PDFs Section
+                    file_lines.append("[ VIDEOS / LECTURES ]")
+                    file_lines.extend(sub_video_lines)
+                    file_lines.append("")
+
                 if sub_pdf_lines:
-                    extracted_lines.append("--- [PDF NOTES] ---")
-                    extracted_lines.extend(sub_pdf_lines)
-                    extracted_lines.append("")
+                    file_lines.append("[ STUDY MATERIAL / PDF NOTES ]")
+                    file_lines.extend(sub_pdf_lines)
+                    file_lines.append("")
 
         total_links = total_videos + total_pdfs
         if total_links == 0:
-            await status_msg.edit_text(f"⚠️ **No media or notes found for ID `{target_pid}`.**")
+            await progress_msg.edit_text(f"⚠️ **No media or document links found for ID `{target_pid}`.**")
             return
 
-        # 4. Generate, Send & Cleanup Document
+        # 6. Save and Upload Document
         filename = f"{target_pid}_{sanitize_filename(course_title)}.txt"
         with open(filename, "w", encoding="utf-8") as f:
-            f.write("\n".join(extracted_lines).strip() + "\n")
+            f.write("\n".join(file_lines).strip() + "\n")
 
         caption = (
             f"**🎯 ᴇxᴛʀᴀᴄᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ**\n\n"
@@ -161,8 +208,13 @@ async def rasonly_handler(client: Client, message: Message):
             f"__Extracted by ONeX Extractor Bot__"
         )
 
-        await message.reply_document(document=filename, caption=caption)
-        await status_msg.delete()
+        await message.reply_document(
+            document=filename,
+            caption=caption,
+            thumb=thumb_path if os.path.exists(thumb_path) else None
+        )
+        await progress_msg.delete()
 
+        # Clean up disk
         if os.path.exists(filename):
             os.remove(filename)
