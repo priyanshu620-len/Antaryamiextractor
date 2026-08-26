@@ -28,7 +28,7 @@ from Extractor.html_converter.bot import handle_txt2html, show_txt2html_help
 from Extractor.modules.sway import cmd_selectionway
 from Extractor.modules.appex_v4 import appex_v5_txt
 from Extractor.modules.classplus import classplus_txt
-from Extractor.modules.pw import pw_login, pw_mobile, pw_token
+from Extractor.modules.pw import pw_login
 from Extractor.modules.exampur import exampur_txt
 from Extractor.modules.careerwill import career_will
 from Extractor.modules.utk import handle_utk_logic
@@ -324,7 +324,7 @@ async def start(_, message):
         )
 
 # -----------------------------------------------------------------------------
-# RASONLY WITHOUT LOGIN FLOW
+# RASONLY WITHOUT LOGIN EXTRACTION FLOW
 # -----------------------------------------------------------------------------
 @app.on_callback_query(filters.regex("^rasonly_free$"))
 async def rasonly_free_callback(client: Client, query: CallbackQuery):
@@ -469,7 +469,7 @@ async def rasonly_extract_batch_callback(client: Client, query: CallbackQuery):
             os.remove(filename)
 
 # -----------------------------------------------------------------------------
-# APPX & GENERAL HELPERS
+# APPX & UTILITIES
 # -----------------------------------------------------------------------------
 def get_alphabet_keyboard():
     """Create a keyboard with A-Z buttons in a modern style"""
@@ -906,22 +906,8 @@ async def handle_callback(client, query):
     elif query.data == 'ak_':
         await ak_start(client, query.message)
 
-    elif query.data == 'pw2_':
-        await query.message.reply_text(
-            "**CHOOSE FROM BELOW **",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("Mobile No.", callback_data='mobile_'),
-                    InlineKeyboardButton("Token", callback_data='token_'),
-                ]
-            ])
-        )
-
-    elif query.data == 'mobile_':
-        await pw_mobile(app, query.message)
-
-    elif query.data == 'token_':
-        await pw_token(app, query.message)
+    elif query.data in ["pw_", "pw2_", "mobile_", "token_"]:
+        await pw_login(app, query.message)
 
     elif query.data == "close_data":
         await query.message.delete()
@@ -972,9 +958,6 @@ async def handle_callback(client, query):
 
     elif query.data == "utkarsh_":
         await handle_utk_logic(app, query.message)
-
-    elif query.data == "pw_":
-        await pw_login(app, query.message)
 
     elif query.data == "rgvikramjeet_":
         await rgvikramjeet(app, query.message)
@@ -1159,5 +1142,3 @@ async def html_to_text_command(client: Client, message: Message):
 
     except Exception as e:
         await message.reply_text(f"❌ Error: {str(e)}")
-
-    
